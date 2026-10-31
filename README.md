@@ -56,6 +56,25 @@ manifest before replay. The exporter includes the VPS capture SHA-256, collector
 code SHA-256, collector source revision, converter code SHA-256, and its own
 Git source-tree fingerprint.
 
+Spot depth captures can also be converted with `export_spot_depth_dataset.py`.
+It publishes the standalone `td_market_data_spot_depth_dataset` schema and
+does not touch the project's frozen Spot datasets. The converter rejects
+reconnects, sequence gaps, receive-clock gaps, hash mismatches, crossed books,
+and incomplete requested windows. It rolls pre-window updates into the initial
+book state using only information received before the window boundary:
+
+```sh
+python3 export_spot_depth_dataset.py \
+  --capture /data/td-market-data-recovered/spot-depth/BTCUSDT/CAPTURE.jsonl \
+  --start 2026-11-01T00:05:00Z --end 2026-11-01T01:02:00Z \
+  --output /data/td-market-data-spot-datasets/BTCUSDT-window-001
+```
+
+This Spot schema is not yet consumed by the Rust verifier or a complete
+execution-cost replay. It is the immutable, provenance-bound input for the
+independent Python replay implementation; actual replay and baseline parity
+remain follow-up acceptance work.
+
 ## VPS deployment, when a VPS is available
 
 1. Create a random relay API key and keep it private:
