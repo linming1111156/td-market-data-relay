@@ -70,6 +70,23 @@ python3 export_spot_depth_dataset.py \
   --output /data/td-market-data-spot-datasets/BTCUSDT-window-001
 ```
 
+Spot public trades are exported with `export_spot_trades_dataset.py`. It
+streams normalized events to disk with a bounded memory footprint, retains
+trade ID, exchange event time, exchange trade time, local receive time,
+aggressor side, and raw-payload hash, and rejects reconnects, sequence gaps,
+clock/receive gaps, malformed frames, and incomplete windows:
+
+```sh
+python3 export_spot_trades_dataset.py \
+  --capture /data/td-market-data-recovered/spot-trades/BTCUSDT/CAPTURE.jsonl \
+  --start 2026-11-01T00:05:00Z --end 2026-11-01T01:02:00Z \
+  --output /data/td-market-data-spot-trades/BTCUSDT-window-001
+```
+
+The trade Dataset is provenance-bound and immutable. It currently supports
+future market-flow research; the execution simulator below consumes the Spot
+depth Dataset.
+
 This Spot schema is not yet consumed by the Rust verifier or a complete
 execution-cost replay. It is the immutable, provenance-bound input for the
 independent Python replay implementation. The current offline IOC replay reads
