@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
@@ -22,7 +23,7 @@ from websockets.exceptions import ConnectionClosed
 
 
 MAX_FRAME_BYTES = 1_048_576
-QUEUE_LIMIT = 4_096
+QUEUE_LIMIT = 256
 UTC = dt.timezone.utc
 
 
@@ -64,6 +65,7 @@ class CaptureFile:
         self.path = self.root / kind / symbol / f"{symbol}-{stamp}-{uuid.uuid4().hex}.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.file = self.path.open("xb", buffering=0)
+        fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         self._write({
             "schema": "td_public_market_capture_record",
             "version": 1,

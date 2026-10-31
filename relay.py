@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import fcntl
 import os
 import threading
 import time
@@ -54,7 +55,7 @@ def compress_old_captures() -> None:
             total -= path.stat().st_size
             path.unlink(missing_ok=True)
     for path in sorted(HOT.rglob("*.jsonl")):
-        if not path.is_file() or now - path.stat().st_mtime <= HOT_SECONDS:
+        if not path.is_file() or now - capture_started_at(path) <= HOT_SECONDS:
             continue
         relative = path.relative_to(HOT)
         destination = ARCHIVE / relative.with_suffix(path.suffix + ".zst")
@@ -62,6 +63,11 @@ def compress_old_captures() -> None:
         temp = destination.with_name(destination.name + f".tmp-{os.getpid()}")
         try:
             with path.open("rb") as src, temp.open("xb") as raw:
+                try:
+                    fcntl.flock(src.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    temp.unlink(missing_ok=True)
+                    continue
                 with zstandard.ZstdCompressor(level=3, write_checksum=True).stream_writer(raw, closefd=False) as dst:
                     while True:
                         chunk = src.read(1024 * 1024)
@@ -81,9 +87,9 @@ def compress_old_captures() -> None:
                     total -= old_size
                 except FileNotFoundError:
                     pass
-            if size > MAX_ARCHIVE_BYTES:
+            if total + size > MAX_ARCHIVE_BYTES:
                 temp.unlink(missing_ok=True)
-                print(f"archive cap rejected capture: {relative}", flush=True)
+                print(f"archive cap could not fit capture: {relative}", flush=True)
                 continue
             os.replace(temp, destination)
             os.utime(destination, (start_time, start_time))
