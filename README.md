@@ -13,6 +13,7 @@ The Compose file runs one collector for each stream, currently defaulting to
 | --- | --- |
 | `spot-depth` | Spot depth diffs plus the REST snapshot used to bridge each connection |
 | `spot-trades` | Spot public trade events |
+| `spot-klines-1m` | Spot 1-minute candle updates, including provisional and finalized events |
 | `usdm-depth` | USD-M futures depth diffs plus the REST snapshot used to bridge each connection |
 | `usdm-funding-mark` | USD-M mark price and funding-rate updates |
 | `usdm-finalized-funding` | Finalized USD-M funding settlements from the public REST history endpoint |
@@ -177,6 +178,10 @@ python3 export_usdm_klines_dataset.py \
 python3 verify_usdm_klines_dataset.py \
   --dataset /data/td-market-data-usdm-klines/BTCUSDT-window-001
 ```
+
+Spot 1-minute Klines are captured as raw future-only frames by the same Docker
+collector and included in relay archival/recovery. A dedicated normalized
+Spot Kline Dataset exporter is not yet included.
 
 The trade Dataset is provenance-bound and immutable. It currently supports
 future market-flow research; the execution simulator below consumes the Spot

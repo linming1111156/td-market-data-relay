@@ -30,6 +30,10 @@ services:
     <<: *collector
     command: ["--kind", "spot-trades", "--symbol", "${SPOT_SYMBOL:-BTCUSDT}"]
 
+  spot-klines-1m:
+    <<: *collector
+    command: ["--kind", "spot-klines-1m", "--symbol", "${SPOT_SYMBOL:-BTCUSDT}"]
+
   usdm-funding-mark:
     <<: *collector
     command: ["--kind", "usdm-funding-mark", "--symbol", "${USDM_SYMBOL:-BTCUSDT}"]

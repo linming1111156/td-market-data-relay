@@ -328,6 +328,8 @@ def websocket_url(kind: str, symbol: str) -> str:
         return f"wss://fstream.binance.com/public/ws/{lowered}@depth@100ms"
     if kind == "spot-trades":
         return f"wss://stream.binance.com:9443/ws/{lowered}@trade"
+    if kind == "spot-klines-1m":
+        return f"wss://stream.binance.com:9443/ws/{lowered}@kline_1m"
     if kind == "usdm-funding-mark":
         return f"wss://fstream.binance.com/market/ws/{lowered}@markPrice@1s"
     if kind == "usdm-aggtrades":
@@ -532,16 +534,16 @@ async def receive_observation_session(
                               trade_id=trade_id, first_trade_id=update.get("f"),
                               last_trade_id=update.get("l"), buyer_is_maker=update.get("m"),
                               accepted_for_sequence=True)
-            elif kind == "usdm-klines-1m":
+            elif kind in {"spot-klines-1m", "usdm-klines-1m"}:
                 kline = update.get("k")
                 if (update.get("e") != "kline" or update.get("s") != symbol
                         or not isinstance(kline, dict) or kline.get("s") != symbol
                         or kline.get("i") != "1m"):
-                    raise ValueError("unexpected USD-M 1m kline event identity")
+                    raise ValueError(f"unexpected {kind} kline event identity")
                 open_ms, close_ms, is_closed = kline.get("t"), kline.get("T"), kline.get("x")
                 if (not isinstance(open_ms, int) or not isinstance(close_ms, int)
                         or not isinstance(is_closed, bool) or close_ms != open_ms + 59_999):
-                    raise ValueError("USD-M 1m kline has invalid window fields")
+                    raise ValueError(f"{kind} kline has invalid window fields")
                 if is_closed:
                     previous = last_closed_kline_open_ms[0]
                     if previous is not None and open_ms != previous + 60_000:
@@ -549,10 +551,10 @@ async def receive_observation_session(
                                       event_time_ms=update.get("E"), kline_open_time_ms=open_ms,
                                       kline_close_time_ms=close_ms, kline_closed=True,
                                       accepted_for_sequence=False)
-                        capture.gap("usdm_kline_minute_discontinuity",
+                        capture.gap(f"{kind}_minute_discontinuity",
                                     expected_open_time_ms=previous + 60_000,
                                     received_open_time_ms=open_ms, session_id=session_id)
-                        raise SequenceGap("USD-M finalized 1m kline sequence is discontinuous")
+                        raise SequenceGap(f"{kind} finalized 1m kline sequence is discontinuous")
                     last_closed_kline_open_ms[0] = open_ms
                 capture.frame(received_ns, monotonic_ns, raw, session_id=session_id,
                               event_time_ms=update.get("E"), kline_open_time_ms=open_ms,
@@ -626,7 +628,7 @@ async def run_capture(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--kind", required=True, choices=("spot-depth", "usdm-depth", "spot-trades", "usdm-funding-mark", "usdm-aggtrades", "usdm-klines-1m", "usdm-finalized-funding"))
+    parser.add_argument("--kind", required=True, choices=("spot-depth", "usdm-depth", "spot-trades", "spot-klines-1m", "usdm-funding-mark", "usdm-aggtrades", "usdm-klines-1m", "usdm-finalized-funding"))
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--hot-root", default=os.environ.get("HOT_ROOT", "/var/lib/td-market-data/hot"))
     parser.add_argument("--max-gap-ms", type=int, default=5_000)
