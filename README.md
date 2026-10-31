@@ -105,8 +105,47 @@ python3 spot_execution_replay.py \
 
 The simulator is offline and has no exchange client. It models taker MARKET_IOC
 orders against visible L2 quantities; it does not model queue position, hidden
-liquidity, or maker orders. Funding is not applicable to this Spot simulator;
-combining USD-M Funding with its execution ledger and baselines remains open.
+liquidity, or maker orders. Funding is not applicable to this Spot simulator.
+
+For the full USD-M execution, finalized Funding settlement, and same-window
+NOOP/Buy-and-Hold comparison, use the project's existing offline-only
+`trading-futures-depth-account-replay` pipeline. This collector repository
+does not implement a second USD-M P&L reducer. Its inputs are the verified
+depth Dataset exported by `export_usdm_depth_dataset.py`, the Mark Price
+Dataset published from the validated funding-mark capture, and the separately
+finalized Funding settlement Dataset. The replay requires complete coverage
+from all three inputs and binds their manifests in a reproducible report.
+
+The `markPrice@1s` stream records observed rates and scheduled Funding times,
+but does not prove the final charge by itself. The existing pipeline requires
+an independently captured pre-settlement schedule and finalized Funding API
+response to publish a settlement Dataset. It rejects stale/missing settlement
+evidence and keeps historical Funding publication availability unknown. See
+the project's USD-M depth capture operations for the full schedule and replay
+workflow. The replay CLI is offline and has no Gateway or exchange order path.
+Its command shape is:
+
+```sh
+trading-futures-depth-account-replay \
+  --depth /data/td-futures-depth-datasets/BTCUSDT/window-001 \
+  --mark /data/td-futures-mark-datasets/BTCUSDT/window-001 \
+  --funding /data/td-futures-funding-datasets/BTCUSDT/window-001 \
+  --config /data/research/account-replay-config.json \
+  --orders /data/research/target-position-orders.json \
+  --output /data/research/comparison-report.json
+
+trading-futures-depth-account-replay \
+  --depth /data/td-futures-depth-datasets/BTCUSDT/window-001 \
+  --mark /data/td-futures-mark-datasets/BTCUSDT/window-001 \
+  --funding /data/td-futures-funding-datasets/BTCUSDT/window-001 \
+  --config /data/research/account-replay-config.json \
+  --orders /data/research/target-position-orders.json \
+  --verify-report /data/research/comparison-report.json
+```
+
+`--verify-report` reruns the deterministic comparison against those exact
+immutable inputs and checks the saved report. Restored depth Datasets also
+need the project's verified reconciliation selection manifest.
 
 ## VPS deployment, when a VPS is available
 
