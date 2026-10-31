@@ -10,9 +10,9 @@ header.
 Checks performed:
 
 - `python3 -m py_compile collector.py export_funding_capture.py relay.py sync.py tests/test_export_funding_capture.py`
-- `python3 -m unittest discover -s tests -v` — 3 passed. The cases cover a
-  valid conversion, rejection of a gap marker, and rejection of a mismatched
-  raw-frame hash.
+- `python3 -m unittest discover -s tests -v` — 6 passed. The cases cover a
+  valid conversion, rejection of a gap marker and mismatched raw-frame hash,
+  idempotent raw recovery, path traversal rejection, and transfer hash mismatch.
 - A synthetic, two-observation future-dated fixture was converted and passed
   through the existing
   `trading-futures-dataset --write-observed-mark-price` command. The Rust

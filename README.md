@@ -59,12 +59,13 @@ the API bearer token remains required by the relay itself.
 
 The relay keeps capture files raw until they are at least one hour old, then
 compresses them with zstd into the archive volume. It removes archived files at
-73 hours from capture start. The archive has a 4 GiB default hard cap; if that
-cap is reached, the oldest archive is discarded early to prevent unbounded disk
-growth. Each collector also has an individual 256 MiB capture limit. These are
-deliberate loss bounds: if they are reached, the API will not contain the full
-73 hours. Set `MAX_ARCHIVE_BYTES` to a measured value appropriate for the VPS
-disk before deployment.
+73 hours from capture start. The archive has a 4 GiB default hard cap and the
+raw hot area has a 1 GiB cap. If either cap is reached, the oldest available
+capture is discarded early to prevent unbounded disk growth. Each collector
+also has an individual 256 MiB capture limit. These are deliberate loss bounds:
+if they are reached, the API will not contain the full 73 hours. Set both
+`MAX_ARCHIVE_BYTES` and `MAX_HOT_BYTES` to measured values appropriate for the
+VPS disk before deployment.
 
 ## Local recovery
 
@@ -78,12 +79,20 @@ TD_RELAY_API_KEY='your-private-key' python3 sync.py \
   --output /data/td-market-data-recovered
 ```
 
-It skips already-present compressed captures and verifies an existing raw
-capture before skipping it. A different local file with the same capture name
-is reported and left untouched. This command is a recovery primitive; a
+It verifies an existing local file against the remote raw-data hash before
+skipping it. A different local file with the same capture name is reported and
+left untouched. This command is a recovery primitive; a
 scheduled local reconciliation service still needs to be connected to the
 existing local capture layout and its gap-detection rules before it can replace
 or repair those files automatically.
+
+For a long-running local recovery worker, set `TD_RELAY_BASE_URL` and
+`TD_RELAY_API_KEY`, then add `--continuous --poll-seconds 300 --state-file
+/var/lib/td-market-data-recovered/cursor.json`. It polls every five minutes by
+default, overlaps the previous two hours to catch captures that were still
+active at the last scan, verifies remote and decompressed hashes, and never
+overwrites a conflicting local file. The cursor advances only after a complete
+successful scan; failures retry from the prior cursor.
 
 ## Local development
 
