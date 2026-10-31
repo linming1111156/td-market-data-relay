@@ -49,6 +49,37 @@ finalized settlement evidence; the WebSocket Mark Price stream remains a
 separate point-in-time observation. The public endpoint returns settlement
 history and accepts a start-time cursor, as described in Binance's
 [USD-M market data API](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Get-Funding-Rate-History).
+After recovery, publish the finalized settlements only when a clean Mark capture
+chain independently establishes each pre-settlement time:
+
+```sh
+python3 export_usdm_funding_dataset.py \
+  --mark-capture /data/td-market-data-recovered/usdm-funding-mark/BTCUSDT/MARK-1.jsonl \
+  --mark-capture /data/td-market-data-recovered/usdm-funding-mark/BTCUSDT/MARK-2.jsonl \
+  --funding-capture /data/td-market-data-recovered/usdm-finalized-funding/BTCUSDT/FUNDING-1.jsonl \
+  --funding-capture /data/td-market-data-recovered/usdm-finalized-funding/BTCUSDT/FUNDING-2.jsonl \
+  --start 2026-11-01T00:00:00Z --end 2026-11-02T00:00:00Z \
+  --output /data/td-usdm-funding-datasets/BTCUSDT-window-001
+```
+
+The publisher refuses capture gaps, bad raw-response/frame hashes, stale
+pre-settlement Mark evidence, receive-time polling gaps, missing or extra
+settlements, and conflicting settlement records. Each published row retains
+`funding_time_ns` and `available_at_ns` separately so accounting time is not
+confused with the time the finalized rate became observable. Output is
+create-only and binds all source capture hashes, collector/converter hashes,
+the Mark-derived schedule, and a logical Dataset fingerprint.
+Recheck the published artifact independently, optionally supplying every
+original capture to verify the source inventory:
+
+```sh
+python3 verify_usdm_funding_dataset.py \
+  --dataset /data/td-usdm-funding-datasets/BTCUSDT-window-001 \
+  --source-capture /data/td-market-data-recovered/usdm-funding-mark/BTCUSDT/MARK-1.jsonl \
+  --source-capture /data/td-market-data-recovered/usdm-funding-mark/BTCUSDT/MARK-2.jsonl \
+  --source-capture /data/td-market-data-recovered/usdm-finalized-funding/BTCUSDT/FUNDING-1.jsonl \
+  --source-capture /data/td-market-data-recovered/usdm-finalized-funding/BTCUSDT/FUNDING-2.jsonl
+```
 
 For Funding research, only a complete single-session, gap-free USD-M Mark Price
 capture can be converted to the Rust project's strict observed-Mark JSONL

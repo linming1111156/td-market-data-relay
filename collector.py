@@ -86,6 +86,8 @@ class CaptureFile:
             "recorded_at_monotonic_ns": time.monotonic_ns(),
             "stream": kind,
             "symbol": symbol,
+            "source_url": ("https://fapi.binance.com/fapi/v1/fundingRate"
+                           if kind == "usdm-finalized-funding" else websocket_url(kind, symbol)),
             "source_host_id": os.environ.get("SOURCE_HOST_ID", "vps-market-data"),
             "source_revision": source_revision,
             "collector_executable_path": str(Path(__file__).resolve()),
