@@ -8,3 +8,6 @@ secrets
 data
 *.jsonl
 *.zst
+tests
+docs
+__pycache__

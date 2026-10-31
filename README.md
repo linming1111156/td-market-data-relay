@@ -26,6 +26,15 @@ The current scope is live public streams. It does not include private Spot
 portfolio snapshots or historical training data. Additional symbols can be
 enabled by adding collector services to `compose.yaml`.
 
+For Funding research, only a complete single-session, gap-free USD-M Mark Price
+capture can be converted to the Rust project's strict observed-Mark JSONL
+format. Run `python3 export_funding_capture.py --capture CAPTURE.jsonl --output
+NEW-VALIDATED.jsonl`; the exporter rejects reconnects, sequence/clock gaps,
+truncated lines, mismatched raw-frame hashes, or a changed source during
+conversion. The original raw capture remains untouched. The resulting file can
+be passed to the existing `trading-futures-dataset --write-observed-mark-price`
+workflow.
+
 ## VPS deployment, when a VPS is available
 
 1. Create a random relay API key and keep it private:

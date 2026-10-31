@@ -39,6 +39,14 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(64 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def compact_json(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode()
 
@@ -52,7 +60,8 @@ class SequenceGap(Exception):
 
 
 class CaptureFile:
-    def __init__(self, root: Path, kind: str, symbol: str, max_bytes: int, source_revision: str):
+    def __init__(self, root: Path, kind: str, symbol: str, max_bytes: int,
+                 source_revision: str, max_gap_ms: int):
         self.root = root.resolve(strict=True)
         self.kind = kind
         self.symbol = symbol
@@ -61,6 +70,8 @@ class CaptureFile:
         self.observations = 0
         self.gaps = 0
         self.disconnects = 0
+        self.previous_frame_wall_ns: int | None = None
+        self.previous_frame_monotonic_ns: int | None = None
         stamp = utc_stamp(now_ns())
         self.path = self.root / kind / symbol / f"{symbol}-{stamp}-{uuid.uuid4().hex}.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,10 +82,14 @@ class CaptureFile:
             "version": 1,
             "record_type": "capture_started",
             "recorded_at_unix_ns": now_ns(),
+            "recorded_at_monotonic_ns": time.monotonic_ns(),
             "stream": kind,
             "symbol": symbol,
             "source_host_id": os.environ.get("SOURCE_HOST_ID", "vps-market-data"),
             "source_revision": source_revision,
+            "collector_executable_path": str(Path(__file__).resolve()),
+            "collector_executable_sha256": sha256_file(Path(__file__).resolve()),
+            "max_gap_ms": max_gap_ms,
             "max_output_bytes": max_bytes,
         }, reserve=4096)
 
@@ -99,6 +114,14 @@ class CaptureFile:
         raw_bytes = raw.encode("utf-8")
         if len(raw_bytes) > MAX_FRAME_BYTES:
             raise ValueError("WebSocket frame exceeds one MiB")
+        if self.previous_frame_wall_ns is not None and self.previous_frame_monotonic_ns is not None:
+            wall_delta = received_ns - self.previous_frame_wall_ns
+            monotonic_delta = monotonic_ns - self.previous_frame_monotonic_ns
+            if wall_delta < 0 or monotonic_delta < 0 or abs(wall_delta - monotonic_delta) > 2_000_000_000:
+                self.record("clock_discontinuity", recorded_at_unix_ns=received_ns,
+                            wall_delta_ns=wall_delta, monotonic_delta_ns=monotonic_delta)
+        self.previous_frame_wall_ns = received_ns
+        self.previous_frame_monotonic_ns = monotonic_ns
         self.record(
             "market_frame",
             received_at_unix_ns=received_ns,
@@ -121,6 +144,7 @@ class CaptureFile:
             "version": 1,
             "record_type": "capture_stopped",
             "recorded_at_unix_ns": now_ns(),
+            "recorded_at_monotonic_ns": time.monotonic_ns(),
             "reason": reason,
             "observation_count": self.observations,
             "gap_count": self.gaps,
@@ -174,6 +198,7 @@ async def receive_depth_session(
     symbol: str,
     max_gap_ms: int,
     stop_at: float,
+    shutdown: asyncio.Event,
 ) -> None:
     url = websocket_url(kind, symbol)
     async with connect(
@@ -224,15 +249,17 @@ async def receive_depth_session(
             last_id = snapshot_id
             bridged = False
             last_receive_mono = time.monotonic_ns()
-            while time.monotonic() < stop_at:
+            while time.monotonic() < stop_at and not shutdown.is_set():
                 if receiver_error:
                     raise ConnectionError(f"depth receive queue overflow: {receiver_error[0]}")
                 remaining = min(max_gap_ms / 1000, max(0.05, stop_at - time.monotonic()))
                 try:
-                    received_ns, monotonic_ns, raw = await asyncio.wait_for(queue.get(), remaining)
+                    received_ns, monotonic_ns, raw = await asyncio.wait_for(queue.get(), min(remaining, 1.0))
                 except asyncio.TimeoutError:
-                    if time.monotonic() >= stop_at:
+                    if shutdown.is_set() or time.monotonic() >= stop_at:
                         break
+                    if remaining > 1.0:
+                        continue
                     capture.gap("websocket_receive_timeout", max_gap_ms=max_gap_ms, session_id=session_id)
                     raise ConnectionError("depth WebSocket receive gap exceeded configured limit")
                 delay_ns = monotonic_ns - last_receive_mono
@@ -293,11 +320,12 @@ async def receive_depth_session(
                 await receiver
             except asyncio.CancelledError:
                 pass
-        if disconnected.is_set() and time.monotonic() < stop_at:
+        if disconnected.is_set() and time.monotonic() < stop_at and not shutdown.is_set():
             error = receiver_error[0] if receiver_error else ConnectionClosed(1006, "connection closed")
             raise ConnectionError(f"WebSocket ended: {error}")
         capture.record("session_disconnected", recorded_at_unix_ns=now_ns(), session_id=session_id,
-                       reason="hourly_rotation" if time.monotonic() >= stop_at else "session_end")
+                       reason="local_shutdown" if shutdown.is_set() else
+                       "hourly_rotation" if time.monotonic() >= stop_at else "session_end")
 
 
 async def receive_observation_session(
@@ -307,6 +335,7 @@ async def receive_observation_session(
     max_gap_ms: int,
     stop_at: float,
     last_trade_id: list[int | None],
+    shutdown: asyncio.Event,
 ) -> None:
     url = websocket_url(kind, symbol)
     async with connect(url, open_timeout=10, ping_interval=20, ping_timeout=20,
@@ -315,13 +344,15 @@ async def receive_observation_session(
         session_id = uuid.uuid4().hex
         capture.record("session_connected", recorded_at_unix_ns=now_ns(), session_id=session_id, url=url)
         last_receive_mono = time.monotonic_ns()
-        while time.monotonic() < stop_at:
+        while time.monotonic() < stop_at and not shutdown.is_set():
             remaining = min(max_gap_ms / 1000, max(0.05, stop_at - time.monotonic()))
             try:
-                raw = await asyncio.wait_for(websocket.recv(), remaining)
+                raw = await asyncio.wait_for(websocket.recv(), min(remaining, 1.0))
             except asyncio.TimeoutError:
-                if time.monotonic() >= stop_at:
+                if shutdown.is_set() or time.monotonic() >= stop_at:
                     break
+                if remaining > 1.0:
+                    continue
                 capture.gap("websocket_receive_timeout", max_gap_ms=max_gap_ms, session_id=session_id)
                 raise ConnectionError("observation WebSocket receive gap exceeded configured limit")
             received_ns = now_ns()
@@ -358,7 +389,7 @@ async def receive_observation_session(
                               index_price=update.get("i"), funding_rate=update.get("r"),
                               next_funding_time_ms=update.get("T"))
         capture.record("session_disconnected", recorded_at_unix_ns=now_ns(), session_id=session_id,
-                       reason="hourly_rotation")
+                       reason="local_shutdown" if shutdown.is_set() else "hourly_rotation")
 
 
 async def run_capture(args: argparse.Namespace) -> None:
@@ -366,7 +397,7 @@ async def run_capture(args: argparse.Namespace) -> None:
     root = Path(args.hot_root)
     root.mkdir(parents=True, exist_ok=True)
     source_revision = os.environ.get("SOURCE_REVISION", "unreleased")
-    capture = CaptureFile(root, args.kind, symbol, args.max_bytes, source_revision)
+    capture = CaptureFile(root, args.kind, symbol, args.max_bytes, source_revision, args.max_gap_ms)
     stop_at = time.monotonic() + args.duration_seconds
     shutdown = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -381,10 +412,11 @@ async def run_capture(args: argparse.Namespace) -> None:
             attempt += 1
             try:
                 if args.kind in {"spot-depth", "usdm-depth"}:
-                    await receive_depth_session(capture, args.kind, symbol, args.max_gap_ms, stop_at)
+                    await receive_depth_session(capture, args.kind, symbol, args.max_gap_ms,
+                                                stop_at, shutdown)
                 else:
                     await receive_observation_session(capture, args.kind, symbol, args.max_gap_ms,
-                                                      stop_at, last_trade_id)
+                                                      stop_at, last_trade_id, shutdown)
                 retry = 1.0
             except CaptureLimit:
                 stop_reason = "capture_byte_limit"
@@ -402,7 +434,7 @@ async def run_capture(args: argparse.Namespace) -> None:
                     pass
                 retry = min(retry * 2, 60.0)
         if shutdown.is_set():
-            stop_reason = "sigterm" if not args.once else "sigint_or_sigterm"
+            stop_reason = "sigterm"
     except CaptureLimit:
         stop_reason = "capture_byte_limit"
     finally:
@@ -418,7 +450,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-gap-ms", type=int, default=5_000)
     parser.add_argument("--max-bytes", type=int, default=256 * 1024 * 1024)
     parser.add_argument("--duration-seconds", type=int, default=3_600)
-    parser.add_argument("--once", action="store_true")
     return parser.parse_args()
 
 

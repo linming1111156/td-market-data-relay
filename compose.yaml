@@ -3,6 +3,7 @@ name: td-market-data-relay
 x-collector: &collector
   build: .
   mem_limit: 512m
+  stop_grace_period: 40s
   restart: unless-stopped
   init: true
   read_only: true
