@@ -72,8 +72,41 @@ python3 export_spot_depth_dataset.py \
 
 This Spot schema is not yet consumed by the Rust verifier or a complete
 execution-cost replay. It is the immutable, provenance-bound input for the
-independent Python replay implementation; actual replay and baseline parity
-remain follow-up acceptance work.
+independent Python replay implementation. The current offline IOC replay reads
+that schema, verifies its content fingerprints and update-ID chain, and uses
+only book updates available by each simulated order arrival. It consumes
+visible depth, caps buys by quote balance including fees, caps sells by base
+balance, and reports partial fills, fees, turnover, and adverse cost against
+the decision-time mid. It runs the strategy intents, NOOP, and a one-time
+Buy-and-Hold entry against the same initial balances, fee rate, latency rule,
+and terminal midpoint:
+
+```json
+{
+  "schema": "td_spot_execution_replay_config",
+  "version": 1,
+  "initial_quote_balance": "1000",
+  "initial_base_balance": "0",
+  "taker_fee_bps": "10",
+  "latency_ms": 250
+}
+```
+
+Orders are a JSON array of MARKET_IOC intents, each with a unique `order_id`,
+`side` (`BUY` or `SELL`), base `quantity`, and `decision_ts_ns`. Run with:
+
+```sh
+python3 spot_execution_replay.py \
+  --dataset /data/td-market-data-spot-datasets/BTCUSDT-window-001 \
+  --config /data/research/spot-replay-config.json \
+  --orders /data/research/orders.json \
+  --output /data/research/replay-report.json
+```
+
+The simulator is offline and has no exchange client. It models taker MARKET_IOC
+orders against visible L2 quantities; it does not model queue position, hidden
+liquidity, or maker orders. Funding is not applicable to this Spot simulator;
+combining USD-M Funding with its execution ledger and baselines remains open.
 
 ## VPS deployment, when a VPS is available
 

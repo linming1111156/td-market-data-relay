@@ -35,7 +35,7 @@ def make_capture(path: Path, *, gap: bool = False) -> None:
     updates = [
         (101 if not gap else 102, 101 if not gap else 102, 2_500, [["99", "2"]], []),
         (102 if not gap else 103, 102 if not gap else 103, 3_000, [], [["101", "2"]]),
-        (103 if not gap else 104, 103 if not gap else 104, 4_000, [["99", "3"]], []),
+        (103 if not gap else 104, 103 if not gap else 104, 4_000, [], [["101", "0"], ["102", "1"]]),
         (104 if not gap else 105, 104 if not gap else 105, 5_500, [], [["101", "3"]]),
     ]
     for index, (first, final, event_ms, bids, asks) in enumerate(updates):
