@@ -15,6 +15,7 @@ The Compose file runs one collector for each stream, currently defaulting to
 | `spot-trades` | Spot public trade events |
 | `usdm-depth` | USD-M futures depth diffs plus the REST snapshot used to bridge each connection |
 | `usdm-funding-mark` | USD-M mark price and funding-rate updates |
+| `usdm-finalized-funding` | Finalized USD-M funding settlements from the public REST history endpoint |
 | `usdm-aggtrades` | USD-M aggregated public trades with exchange aggregate-trade IDs |
 | `usdm-klines-1m` | USD-M 1-minute candle updates, including provisional and finalized events |
 
@@ -37,6 +38,17 @@ window until a fresh contiguous segment is collected. USD-M aggregate trades
 and candles use Binance's `/market` WebSocket route, while depth uses `/public`
 and Mark Price uses `/market` as documented in the official
 [USD-M WebSocket connection guide](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/websocket-market-streams/Connect).
+
+`usdm-finalized-funding` polls Binance's public Funding Rate History endpoint
+once a minute. Its persisted cursor is initialized to the collector's current
+time, so it does not backfill historical Funding; on restart it resumes after
+the last settlement already written to the raw capture. Each response retains
+the raw response bytes and hash, request cursor, and local receive wall and
+monotonic times. API failures are explicit gap/error records. This is the
+finalized settlement evidence; the WebSocket Mark Price stream remains a
+separate point-in-time observation. The public endpoint returns settlement
+history and accepts a start-time cursor, as described in Binance's
+[USD-M market data API](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Get-Funding-Rate-History).
 
 For Funding research, only a complete single-session, gap-free USD-M Mark Price
 capture can be converted to the Rust project's strict observed-Mark JSONL

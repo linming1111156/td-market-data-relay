@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import decimal
 import fcntl
 import hashlib
 import json
@@ -177,6 +178,144 @@ def get_snapshot(kind: str, symbol: str) -> tuple[dict[str, Any], str]:
     if not isinstance(value.get("bids"), list) or not isinstance(value.get("asks"), list):
         raise ValueError("depth snapshot is missing bids or asks")
     return value, body.decode("utf-8")
+
+
+def fetch_finalized_funding(symbol: str, start_time_ms: int) -> tuple[list[dict[str, Any]], str, str]:
+    query = urllib.parse.urlencode({"symbol": symbol, "startTime": start_time_ms, "limit": 1000})
+    url = f"https://fapi.binance.com/fapi/v1/fundingRate?{query}"
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        raw = response.read(MAX_FRAME_BYTES + 1)
+    if len(raw) > MAX_FRAME_BYTES:
+        raise ValueError("finalized Funding response exceeds one MiB")
+    rows = json.loads(raw)
+    if not isinstance(rows, list) or len(rows) > 1000:
+        raise ValueError("finalized Funding response must be an array of at most 1000 rows")
+    previous_time: int | None = None
+    for row in rows:
+        if not isinstance(row, dict) or row.get("symbol") != symbol:
+            raise ValueError("finalized Funding row has an unexpected symbol")
+        funding_time = row.get("fundingTime")
+        if not isinstance(funding_time, int) or funding_time < start_time_ms:
+            raise ValueError("finalized Funding row is outside the requested future-only cursor")
+        rate = row.get("fundingRate")
+        if not isinstance(rate, str) or not decimal.Decimal(rate).is_finite():
+            raise ValueError("finalized Funding row has an invalid funding rate")
+        mark_price = row.get("markPrice")
+        if mark_price is not None and (
+            not isinstance(mark_price, str) or not decimal.Decimal(mark_price).is_finite()
+        ):
+            raise ValueError("finalized Funding row has an invalid mark price")
+        if previous_time is not None and funding_time <= previous_time:
+            raise ValueError("finalized Funding rows are not in strict time order")
+        previous_time = funding_time
+    return rows, raw.decode("utf-8"), url
+
+
+def read_or_initialize_funding_cursor(path: Path) -> tuple[int, int]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        value = json.loads(path.read_text())
+    except FileNotFoundError:
+        start_time_ms = time.time_ns() // 1_000_000
+        temporary = path.with_name(path.name + ".new")
+        temporary.unlink(missing_ok=True)
+        with temporary.open("x", encoding="utf-8") as output:
+            json.dump({"schema": "td_usdm_finalized_funding_cursor", "version": 1,
+                       "start_time_ms": start_time_ms, "last_funding_time_ms": None}, output)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        return start_time_ms, start_time_ms
+    if (not isinstance(value, dict) or value.get("schema") != "td_usdm_finalized_funding_cursor"
+            or value.get("version") != 1 or not isinstance(value.get("start_time_ms"), int)):
+        raise ValueError("Funding cursor has an unsupported or malformed schema")
+    last_time = value.get("last_funding_time_ms")
+    if last_time is not None and not isinstance(last_time, int):
+        raise ValueError("Funding cursor's last settlement time is invalid")
+    first_time = value["start_time_ms"]
+    return first_time if last_time is None else last_time + 1, first_time
+
+
+def write_funding_cursor(path: Path, start_time_ms: int, last_funding_time_ms: int) -> None:
+    temporary = path.with_name(path.name + ".new")
+    temporary.unlink(missing_ok=True)
+    with temporary.open("x", encoding="utf-8") as output:
+        json.dump({"schema": "td_usdm_finalized_funding_cursor", "version": 1,
+                   "start_time_ms": start_time_ms,
+                   "last_funding_time_ms": last_funding_time_ms}, output)
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, path)
+
+
+async def run_finalized_funding_capture(args: argparse.Namespace, shutdown: asyncio.Event) -> None:
+    symbol = args.symbol.upper()
+    hot_root = Path(args.hot_root)
+    hot_root.mkdir(parents=True, exist_ok=True)
+    cursor_root = Path(args.cursor_root)
+    cursor_root.mkdir(parents=True, exist_ok=True)
+    cursor_path = cursor_root / f"usdm-finalized-funding-{symbol}.json"
+    lock_path = cursor_path.with_suffix(".lock")
+    with lock_path.open("a+b") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError("another finalized Funding collector owns this symbol cursor") from error
+        cursor_start_ms, cursor_initial_start_ms = read_or_initialize_funding_cursor(cursor_path)
+        source_revision = os.environ.get("SOURCE_REVISION", "unreleased")
+        capture = CaptureFile(hot_root, "usdm-finalized-funding", symbol, args.max_bytes,
+                              source_revision, args.poll_seconds * 2_000)
+        capture.record("funding_cursor_started", recorded_at_unix_ns=now_ns(),
+                       request_start_time_ms=cursor_start_ms,
+                       cursor_path=str(cursor_path), future_only=True)
+        stop_at = time.monotonic() + args.duration_seconds
+        next_poll = time.monotonic()
+        stop_reason = "duration_elapsed"
+        try:
+            while time.monotonic() < stop_at and not shutdown.is_set():
+                delay = next_poll - time.monotonic()
+                if delay > 0:
+                    try:
+                        await asyncio.wait_for(shutdown.wait(), min(delay, stop_at - time.monotonic()))
+                        if shutdown.is_set():
+                            break
+                    except asyncio.TimeoutError:
+                        pass
+                received_ns = now_ns()
+                monotonic_ns = time.monotonic_ns()
+                try:
+                    rows, raw_response, url = await asyncio.to_thread(
+                        fetch_finalized_funding, symbol, cursor_start_ms)
+                    received_ns = now_ns()
+                    monotonic_ns = time.monotonic_ns()
+                    capture.record("funding_api_page", request_url=url,
+                                   request_start_time_ms=cursor_start_ms,
+                                   received_at_unix_ns=received_ns,
+                                   receive_monotonic_ns=monotonic_ns,
+                                   raw_response=raw_response,
+                                   raw_response_sha256=sha256_bytes(raw_response.encode()),
+                                   record_count=len(rows), funding_rows=rows)
+                    if rows:
+                        last_funding_time_ms = rows[-1]["fundingTime"]
+                        write_funding_cursor(cursor_path, cursor_initial_start_ms, last_funding_time_ms)
+                        cursor_start_ms = last_funding_time_ms + 1
+                    next_poll = time.monotonic() + args.poll_seconds
+                except Exception as error:
+                    capture.gap("finalized_funding_api_poll_failed", request_start_time_ms=cursor_start_ms,
+                                error=f"{type(error).__name__}: {error}")
+                    capture.record("funding_api_error", recorded_at_unix_ns=received_ns,
+                                   request_start_time_ms=cursor_start_ms,
+                                   error=f"{type(error).__name__}: {error}")
+                    next_poll = time.monotonic() + min(args.poll_seconds, 30)
+            if shutdown.is_set():
+                stop_reason = "sigterm"
+        except CaptureLimit:
+            stop_reason = "capture_byte_limit"
+        finally:
+            capture.close(stop_reason)
+            print(f"finalized Funding capture stopped: {capture.path} "
+                  f"records={capture.observations} gaps={capture.gaps}")
 
 
 def websocket_url(kind: str, symbol: str) -> str:
@@ -432,13 +571,16 @@ async def run_capture(args: argparse.Namespace) -> None:
     symbol = args.symbol.upper()
     root = Path(args.hot_root)
     root.mkdir(parents=True, exist_ok=True)
-    source_revision = os.environ.get("SOURCE_REVISION", "unreleased")
-    capture = CaptureFile(root, args.kind, symbol, args.max_bytes, source_revision, args.max_gap_ms)
-    stop_at = time.monotonic() + args.duration_seconds
     shutdown = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, shutdown.set)
+    if args.kind == "usdm-finalized-funding":
+        await run_finalized_funding_capture(args, shutdown)
+        return
+    source_revision = os.environ.get("SOURCE_REVISION", "unreleased")
+    capture = CaptureFile(root, args.kind, symbol, args.max_bytes, source_revision, args.max_gap_ms)
+    stop_at = time.monotonic() + args.duration_seconds
     retry = 1.0
     attempt = 0
     last_trade_id: list[int | None] = [None]
@@ -482,19 +624,21 @@ async def run_capture(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--kind", required=True, choices=("spot-depth", "usdm-depth", "spot-trades", "usdm-funding-mark", "usdm-aggtrades", "usdm-klines-1m"))
+    parser.add_argument("--kind", required=True, choices=("spot-depth", "usdm-depth", "spot-trades", "usdm-funding-mark", "usdm-aggtrades", "usdm-klines-1m", "usdm-finalized-funding"))
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--hot-root", default=os.environ.get("HOT_ROOT", "/var/lib/td-market-data/hot"))
     parser.add_argument("--max-gap-ms", type=int, default=5_000)
     parser.add_argument("--max-bytes", type=int, default=256 * 1024 * 1024)
     parser.add_argument("--duration-seconds", type=int, default=3_600)
+    parser.add_argument("--poll-seconds", type=int, default=60)
+    parser.add_argument("--cursor-root", default=os.environ.get("CURSOR_ROOT", "/var/lib/td-market-data/state"))
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    if args.max_gap_ms <= 0 or args.max_bytes < 8192 or args.duration_seconds <= 0:
-        raise SystemExit("max gap, capture size, and duration must be positive and bounded")
+    if args.max_gap_ms <= 0 or args.max_bytes < 8192 or args.duration_seconds <= 0 or args.poll_seconds <= 0:
+        raise SystemExit("max gap, capture size, duration, and poll interval must be positive and bounded")
     asyncio.run(run_capture(args))
 
 
