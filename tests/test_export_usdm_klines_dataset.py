@@ -18,21 +18,25 @@ def line(record):
     return json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
 
 
-def make_capture(path, opens=None):
+def make_capture(path, opens=None, market="USD_M"):
     if opens is None:
         opens = [BASE_MS - BAR_MS, BASE_MS, BASE_MS + BAR_MS, BASE_MS + 2 * BAR_MS]
     start_ns = opens[0] * 1_000_000 - 1_000_000_000
+    capture_url = (f"wss://stream.binance.com:9443/ws/{SYMBOL.lower()}@kline_1m"
+                   if market == "SPOT" else URL)
     records = [{"schema": "td_public_market_capture_record", "version": 1,
                 "record_type": "capture_started", "recorded_at_unix_ns": start_ns,
                 "recorded_at_monotonic_ns": 1_000_000_000,
-                "stream": "usdm-klines-1m", "symbol": SYMBOL, "source_url": URL,
+                "stream": "spot-klines-1m" if market == "SPOT" else "usdm-klines-1m",
+                "symbol": SYMBOL,
+                "source_url": f"wss://stream.binance.com:9443/ws/{SYMBOL.lower()}@kline_1m" if market == "SPOT" else URL,
                 "source_host_id": "fixture-vps", "source_revision": "fixture-rev",
                 "collector_executable_path": "/app/collector.py",
                 "collector_executable_sha256": "a" * 64,
                 "max_gap_ms": 120_000, "max_output_bytes": 256 * 1024 * 1024},
                {"schema": "td_public_market_capture_record", "version": 1,
                 "record_type": "session_connected", "recorded_at_unix_ns": start_ns + 1_000_000,
-                "session_id": "session-1", "url": URL}]
+                "session_id": "session-1", "url": capture_url}]
     for index, open_ms in enumerate(opens):
         close_ms = open_ms + BAR_MS - 1
         event_ms = close_ms + 1
@@ -116,6 +120,18 @@ class UsdmKlinesDatasetTests(unittest.TestCase):
             (output / "events.jsonl").write_bytes(b"".join(line(row) for row in records))
             with self.assertRaises(DatasetRejected):
                 verify_dataset(output)
+
+    def test_publishes_and_verifies_spot_klines_as_separate_market(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture, output = root / "capture.jsonl", root / "dataset"
+            make_capture(capture, market="SPOT")
+            manifest = publish([capture], output, SYMBOL,
+                               BASE_MS * 1_000_000,
+                               (BASE_MS + 2 * BAR_MS) * 1_000_000, market="SPOT")
+            self.assertEqual(manifest["market"], "SPOT")
+            self.assertEqual(manifest["schema"], "td_market_data_spot_klines_dataset")
+            self.assertEqual(verify_dataset(output, [capture])["event_count"], 2)
 
 
 if __name__ == "__main__":

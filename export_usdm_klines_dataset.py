@@ -66,9 +66,11 @@ def dec(value: Any, field: str, line: int, *, positive: bool = False) -> tuple[s
 
 
 def publish(captures: list[Path], output: Path, symbol: str,
-            start_ns: int, end_ns: int) -> dict[str, Any]:
+            start_ns: int, end_ns: int, market: str = "USD_M") -> dict[str, Any]:
     if not captures or not output.is_absolute() or start_ns >= end_ns:
         raise KlinesRejected("supply captures, an absolute output, and a positive window")
+    if market not in {"SPOT", "USD_M"}:
+        raise KlinesRejected("market must be SPOT or USD_M")
     if (start_ns % (BAR_MS * 1_000_000) or end_ns % (BAR_MS * 1_000_000)
             or not symbol.isascii() or not symbol.isalnum()):
         raise KlinesRejected("window must be minute-aligned and symbol alphanumeric")
@@ -86,19 +88,19 @@ def publish(captures: list[Path], output: Path, symbol: str,
         raise KlinesRejected("output exists or is inside the source repository")
     stage = Path(tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=parent))
     try:
-        return _publish(resolved, output, parent, stage, symbol.upper(), start_ns, end_ns)
+        return _publish(resolved, output, parent, stage, symbol.upper(), start_ns, end_ns, market)
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
 
 
 def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
-             symbol: str, start_ns: int, end_ns: int) -> dict[str, Any]:
+             symbol: str, start_ns: int, end_ns: int, market: str) -> dict[str, Any]:
     start_ms, end_ms = start_ns // 1_000_000, end_ns // 1_000_000
     expected_bars = (end_ms - start_ms) // BAR_MS
     if expected_bars <= 0 or expected_bars > MAX_BARS:
         raise KlinesRejected("window bar count exceeds configured bound")
-    logical = hashlib.sha256(b"td-market-data-usdm-klines-1m-v1\0" + canonical({
+    logical = hashlib.sha256(f"td-market-data-{market.lower()}-klines-1m-v1\0".encode() + canonical({
         "symbol": symbol, "start_ns": start_ns, "end_ns": end_ns}))
     events_hash = hashlib.sha256()
     event_count = event_bytes = frame_count = 0
@@ -113,6 +115,9 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
     max_chain_gap_ms = max_dataset_gap_ms = 0
     sources: list[dict[str, Any]] = []
     chain_start_ns = chain_stop_ns = last_capture_start_ns = None
+    capture_stream_name = "spot-klines-1m" if market == "SPOT" else "usdm-klines-1m"
+    source_url = (f"wss://stream.binance.com:9443/ws/{symbol.lower()}@kline_1m" if market == "SPOT"
+                  else f"wss://fstream.binance.com/market/ws/{symbol.lower()}@kline_1m")
 
     with (stage / "events.jsonl").open("xb", buffering=0) as target:
         for capture in captures:
@@ -140,9 +145,8 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
                         raise KlinesRejected(f"{capture}:{line_number}: unsupported capture schema")
                     kind = row.get("record_type")
                     if line_number == 1:
-                        if (kind != "capture_started" or row.get("stream") != "usdm-klines-1m"
-                                or row.get("symbol") != symbol
-                                or row.get("source_url") != f"wss://fstream.binance.com/market/ws/{symbol.lower()}@kline_1m"):
+                        if (kind != "capture_started" or row.get("stream") != capture_stream_name
+                                or row.get("symbol") != symbol or row.get("source_url") != source_url):
                             raise KlinesRejected(f"capture identity/source mismatch: {capture}")
                         start = row
                         started_ns = uint(row.get("recorded_at_unix_ns"), "capture start", line_number)
@@ -298,8 +302,8 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
     if chain_start_ns is None or chain_stop_ns is None or chain_start_ns > start_ns or chain_stop_ns < end_ns:
         raise KlinesRejected("capture lifecycle does not cover requested window")
     builder = source_revision()
-    manifest = {"schema": "td_market_data_usdm_klines_dataset", "version": 1,
-                "exchange": "BINANCE", "market": "USD_M", "symbol": symbol, "interval": "1m",
+    manifest = {"schema": f"td_market_data_{market.lower()}_klines_dataset", "version": 1,
+                "exchange": "BINANCE", "market": market, "symbol": symbol, "interval": "1m",
                 "window": {"start_ns": start_ns, "end_ns": end_ns}, "event_count": event_count,
                 "first_open_time_ms": first_inside["open_time_ms"],
                 "last_open_time_ms": last_inside["open_time_ms"],
@@ -341,19 +345,20 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
     return manifest
 
 
-def main() -> None:
+def main(default_market: str = "USD_M") -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--capture", action="append", required=True, type=Path)
     parser.add_argument("--symbol", default="BTCUSDT")
+    parser.add_argument("--market", choices=("SPOT", "USD_M"), default=default_market)
     parser.add_argument("--start", required=True, type=parse_time)
     parser.add_argument("--end", required=True, type=parse_time)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     try:
-        manifest = publish(args.capture, args.output, args.symbol.upper(), args.start, args.end)
+        manifest = publish(args.capture, args.output, args.symbol.upper(), args.start, args.end, args.market)
     except (KlinesRejected, OSError, ValueError) as error:
-        raise SystemExit(f"USD-M Kline Dataset rejected: {error}") from error
-    print(f"USD-M finalized Kline Dataset published: bars={manifest['event_count']} "
+        raise SystemExit(f"{args.market} Kline Dataset rejected: {error}") from error
+    print(f"{args.market} finalized Kline Dataset published: bars={manifest['event_count']} "
           f"logical_fingerprint={manifest['logical_fingerprint_sha256']}")
 
 

@@ -18,6 +18,10 @@ class CollectorStreamTests(unittest.TestCase):
             websocket_url("usdm-klines-1m", "BTCUSDT"),
             "wss://fstream.binance.com/market/ws/btcusdt@kline_1m",
         )
+        self.assertEqual(
+            websocket_url("spot-klines-1m", "BTCUSDT"),
+            "wss://stream.binance.com:9443/ws/btcusdt@kline_1m",
+        )
 
     def test_existing_stream_routes_remain_market_specific(self):
         self.assertIn("/public/ws/btcusdt@depth", websocket_url("usdm-depth", "BTCUSDT"))

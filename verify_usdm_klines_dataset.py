@@ -55,11 +55,13 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
         manifest = json.loads(manifest_path.read_bytes())
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise DatasetRejected("manifest.json is invalid") from error
-    if (not isinstance(manifest, dict) or manifest.get("schema") != "td_market_data_usdm_klines_dataset"
-            or manifest.get("version") != 1 or manifest.get("exchange") != "BINANCE"
-            or manifest.get("market") != "USD_M" or manifest.get("interval") != "1m"
+    if (not isinstance(manifest, dict) or manifest.get("version") != 1 or manifest.get("exchange") != "BINANCE"
+            or manifest.get("market") not in {"SPOT", "USD_M"} or manifest.get("interval") != "1m"
             or manifest.get("events_file") != "events.jsonl"):
-        raise DatasetRejected("unsupported USD-M Kline Dataset manifest")
+        raise DatasetRejected("unsupported Spot/USD-M Kline Dataset manifest")
+    market = manifest["market"]
+    if manifest.get("schema") != f"td_market_data_{market.lower()}_klines_dataset":
+        raise DatasetRejected("Kline market/schema mismatch")
     symbol = manifest.get("symbol")
     if not isinstance(symbol, str) or not symbol.isascii() or not symbol.isalnum():
         raise DatasetRejected("manifest symbol invalid")
@@ -71,7 +73,7 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
     if start_ns >= end_ns or start_ns % (BAR_MS * 1_000_000) or end_ns % (BAR_MS * 1_000_000):
         raise DatasetRejected("manifest window invalid")
     expected_count = (end_ns - start_ns) // (BAR_MS * 1_000_000)
-    logical = hashlib.sha256(b"td-market-data-usdm-klines-1m-v1\0" + canonical({
+    logical = hashlib.sha256(f"td-market-data-{market.lower()}-klines-1m-v1\0".encode() + canonical({
         "symbol": symbol, "start_ns": start_ns, "end_ns": end_ns}))
     event_hash = hashlib.sha256()
     rows: list[dict[str, Any]] = []
@@ -188,7 +190,7 @@ def main() -> None:
         manifest = verify_dataset(args.dataset, args.source_capture)
     except (DatasetRejected, OSError, ValueError) as error:
         raise SystemExit(f"USD-M Kline Dataset rejected: {error}") from error
-    print(f"USD-M finalized Kline Dataset valid: bars={manifest['event_count']} "
+    print(f"{manifest['market']} finalized Kline Dataset valid: bars={manifest['event_count']} "
           f"logical_fingerprint={manifest['logical_fingerprint_sha256']}")
 
 

@@ -179,9 +179,18 @@ python3 verify_usdm_klines_dataset.py \
   --dataset /data/td-market-data-usdm-klines/BTCUSDT-window-001
 ```
 
-Spot 1-minute Klines are captured as raw future-only frames by the same Docker
-collector and included in relay archival/recovery. A dedicated normalized
-Spot Kline Dataset exporter is not yet included.
+Spot 1-minute Klines use the same future-only lifecycle and finalized-bar
+checks, then publish into a market-specific immutable Dataset. For example:
+
+```sh
+python3 export_spot_klines_dataset.py \
+  --capture /data/td-market-data-recovered/spot-klines-1m/BTCUSDT/CAPTURE.jsonl \
+  --start 2026-11-01T00:05:00Z --end 2026-11-01T01:02:00Z \
+  --output /data/td-market-data-spot-klines/BTCUSDT-window-001
+
+python3 verify_spot_klines_dataset.py \
+  --dataset /data/td-market-data-spot-klines/BTCUSDT-window-001
+```
 
 The trade Dataset is provenance-bound and immutable. It currently supports
 future market-flow research; the execution simulator below consumes the Spot
