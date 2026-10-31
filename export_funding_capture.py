@@ -76,10 +76,16 @@ def source_url(symbol: str) -> str:
 
 def export_capture(source: Path, output: Path, symbol: str, max_gap_ms: int | None) -> tuple[str, int]:
     source = source.resolve(strict=True)
+    if not output.is_absolute():
+        raise InvalidCapture("validated capture output path must be absolute")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output = output.parent.resolve(strict=True) / output.name
+    repository = Path(__file__).resolve().parent
+    if output == repository or repository in output.parents:
+        raise InvalidCapture("validated capture output must be outside the Python source repository")
     if source.stat().st_size > MAX_CAPTURE_BYTES:
         raise InvalidCapture("source capture exceeds the 256 MiB validation bound")
     source_hash_before = sha256_file(source)
-    output.parent.mkdir(parents=True, exist_ok=True)
     converter_hash = sha256_file(Path(__file__).resolve())
     fd, temp_name = tempfile.mkstemp(prefix=".funding-export-", suffix=".jsonl", dir=output.parent)
     temp = Path(temp_name)

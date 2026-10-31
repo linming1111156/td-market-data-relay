@@ -35,6 +35,27 @@ conversion. The original raw capture remains untouched. The resulting file can
 be passed to the existing `trading-futures-dataset --write-observed-mark-price`
 workflow.
 
+For USD-M execution replay, `export_usdm_depth_dataset.py` publishes the same
+capture format as an immutable `td_gateway_usdm_depth_dataset` directory. It
+requires a REST snapshot before the requested window, a validated snapshot
+bridge before the window, a clean one-session update chain, receive clocks with
+no gaps or clock jumps, and a capture stop before the window end. It creates
+`snapshot.json`, `events.jsonl`, `health.jsonl`, and a fingerprinted
+`manifest.json` without changing the raw capture:
+
+```sh
+python3 export_usdm_depth_dataset.py \
+  --capture /data/td-market-data-recovered/usdm-depth/BTCUSDT/CAPTURE.jsonl \
+  --start 2026-11-01T00:05:00Z --end 2026-11-01T01:02:00Z \
+  --output /data/td-futures-depth-datasets/BTCUSDT-window-001
+```
+
+The resulting directory is intended for the existing read-only
+`trading-futures-depth-account-replay` workflow, which verifies the Dataset
+manifest before replay. The exporter includes the VPS capture SHA-256, collector
+code SHA-256, collector source revision, converter code SHA-256, and its own
+Git source-tree fingerprint.
+
 ## VPS deployment, when a VPS is available
 
 1. Create a random relay API key and keep it private:
