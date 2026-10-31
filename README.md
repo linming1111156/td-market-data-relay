@@ -115,6 +115,14 @@ active at the last scan, verifies remote and decompressed hashes, and never
 overwrites a conflicting local file. The cursor advances only after a complete
 successful scan; failures retry from the prior cursor.
 
+`deploy/td-market-data-sync.service` is a systemd template for that local
+worker. It is not installed automatically. Before enabling it, create the
+`td-market-data-sync` OS user, install this repository and its Python
+requirements under `/opt/td-market-data-relay/.venv`, and create a mode-0600
+`/etc/td-market-data-relay/sync.env` containing the relay HTTPS URL and API key.
+The unit writes only to its dedicated `/var/lib/td-market-data-recovered`
+state directory.
+
 ## Local development
 
 Requires Python 3.13+, `pip install -r requirements.txt`, and outbound access to

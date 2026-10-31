@@ -8,6 +8,7 @@ import hmac
 import json
 import fcntl
 import os
+import re
 import threading
 import time
 import urllib.parse
@@ -64,6 +65,7 @@ def compress_old_captures() -> None:
     now = time.time()
     ARCHIVE.mkdir(parents=True, exist_ok=True)
     HOT.mkdir(parents=True, exist_ok=True)
+    cleanup_stale_temps(ARCHIVE)
     # Oldest archives are discarded first when the explicitly bounded quota is reached.
     archived = sorted((p for p in ARCHIVE.rglob("*.jsonl.zst") if p.is_file()), key=lambda p: p.stat().st_mtime)
     total = sum(p.stat().st_size for p in archived)
@@ -87,7 +89,9 @@ def compress_old_captures() -> None:
             if destination.exists() and meta_path.exists():
                 try:
                     prior = json.loads(meta_path.read_text())
-                    prior_valid = (prior.get("compressed_sha256") == sha256_file(destination)
+                    prior_valid = (prior.get("schema") == "td_market_data_archive_metadata_v1"
+                                   and prior.get("capture_id") == path.name.split("-")[-1].split(".")[0]
+                                   and prior.get("compressed_sha256") == sha256_file(destination)
                                    and prior.get("raw_sha256") == sha256_file(path))
                 except (OSError, json.JSONDecodeError):
                     prior_valid = False
@@ -124,6 +128,7 @@ def compress_old_captures() -> None:
                 try:
                     old_size = oldest.stat().st_size
                     oldest.unlink()
+                    oldest.with_name(oldest.name + ".meta.json").unlink(missing_ok=True)
                     total -= old_size
                 except FileNotFoundError:
                     pass
@@ -172,6 +177,23 @@ def enforce_hot_cap() -> None:
             continue
     if total > MAX_HOT_BYTES:
         print(f"hot storage remains above cap because captures are active: bytes={total}", flush=True)
+
+
+def cleanup_stale_temps(root: Path) -> None:
+    for path in root.rglob("*.tmp-*"):
+        match = re.search(r"\.tmp-(\d+)$", path.name)
+        if match is None:
+            continue
+        owner_pid = int(match.group(1))
+        if owner_pid == os.getpid():
+            continue
+        try:
+            os.kill(owner_pid, 0)
+            continue
+        except ProcessLookupError:
+            path.unlink(missing_ok=True)
+        except PermissionError:
+            continue
 
 
 def retention_worker() -> None:

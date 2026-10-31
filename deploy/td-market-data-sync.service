@@ -1,0 +1,29 @@
+[Unit]
+Description=Continuously restore verified public market capture files from TD relay
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=td-market-data-sync
+Group=td-market-data-sync
+WorkingDirectory=/opt/td-market-data-relay
+EnvironmentFile=/etc/td-market-data-relay/sync.env
+StateDirectory=td-market-data-recovered
+StateDirectoryMode=0750
+ExecStart=/opt/td-market-data-relay/.venv/bin/python3 /opt/td-market-data-relay/sync.py --output /var/lib/td-market-data-recovered --continuous --poll-seconds 300 --state-file /var/lib/td-market-data-recovered/cursor.json
+Restart=always
+RestartSec=30s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/td-market-data-recovered
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
