@@ -1,0 +1,68 @@
+name: td-market-data-relay
+
+x-collector: &collector
+  build: .
+  restart: unless-stopped
+  init: true
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop: [ALL]
+  environment:
+    HOT_ROOT: /var/lib/td-market-data/hot
+    SOURCE_HOST_ID: ${SOURCE_HOST_ID:-vps-market-data}
+    SOURCE_REVISION: ${SOURCE_REVISION:-unreleased}
+  volumes:
+    - market-data:/var/lib/td-market-data
+
+services:
+  spot-depth:
+    <<: *collector
+    command: ["--kind", "spot-depth", "--symbol", "${SPOT_SYMBOL:-BTCUSDT}"]
+
+  usdm-depth:
+    <<: *collector
+    command: ["--kind", "usdm-depth", "--symbol", "${USDM_SYMBOL:-BTCUSDT}"]
+
+  spot-trades:
+    <<: *collector
+    command: ["--kind", "spot-trades", "--symbol", "${SPOT_SYMBOL:-BTCUSDT}"]
+
+  usdm-funding-mark:
+    <<: *collector
+    command: ["--kind", "usdm-funding-mark", "--symbol", "${USDM_SYMBOL:-BTCUSDT}"]
+
+  relay:
+    build: .
+    entrypoint: ["python3", "/app/relay.py"]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    env_file: .env
+    environment:
+      HOT_ROOT: /var/lib/td-market-data/hot
+      ARCHIVE_ROOT: /var/lib/td-market-data/archive
+      HOT_SECONDS: "3600"
+      DELETE_SECONDS: "262800"
+      MAX_ARCHIVE_BYTES: ${MAX_ARCHIVE_BYTES:-4294967296}
+      RELAY_BIND: 0.0.0.0
+      RELAY_PORT: "8080"
+    volumes:
+      - market-data:/var/lib/td-market-data
+    expose: ["8080"]
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN}"]
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    depends_on: [relay]
+
+volumes:
+  market-data:
