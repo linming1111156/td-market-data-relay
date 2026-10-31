@@ -81,6 +81,9 @@ python3 export_spot_trades_dataset.py \
   --capture /data/td-market-data-recovered/spot-trades/BTCUSDT/CAPTURE.jsonl \
   --start 2026-11-01T00:05:00Z --end 2026-11-01T01:02:00Z \
   --output /data/td-market-data-spot-trades/BTCUSDT-window-001
+
+python3 verify_spot_trades_dataset.py \
+  --dataset /data/td-market-data-spot-trades/BTCUSDT-window-001
 ```
 
 The trade Dataset is provenance-bound and immutable. It currently supports

@@ -13,6 +13,11 @@ without replacing existing data. Its synthetic acceptance checks separate
 event/trade/receive times, trade aggressor-side interpretation, a trade-ID
 gap, raw-frame tampering, and no-publication on rejected inputs.
 
+`verify_spot_trades_dataset.py` independently re-reads published files,
+streams the event hash and logical fingerprint, validates identity/window/
+trade-ID/timestamp/summary fields, and rejects altered events or manifest
+fingerprints.
+
 The fixture is synthetic; live VPS capture and a Spot trades replay consumer
 remain unverified. Raw trade captures with reconnects or sequence gaps are
 rejected for the requested Dataset interval.
