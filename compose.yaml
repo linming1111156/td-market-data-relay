@@ -34,6 +34,14 @@ services:
     <<: *collector
     command: ["--kind", "usdm-funding-mark", "--symbol", "${USDM_SYMBOL:-BTCUSDT}"]
 
+  usdm-aggtrades:
+    <<: *collector
+    command: ["--kind", "usdm-aggtrades", "--symbol", "${USDM_SYMBOL:-BTCUSDT}"]
+
+  usdm-klines-1m:
+    <<: *collector
+    command: ["--kind", "usdm-klines-1m", "--symbol", "${USDM_SYMBOL:-BTCUSDT}"]
+
   relay:
     build: .
     mem_limit: 512m

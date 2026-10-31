@@ -189,6 +189,10 @@ def websocket_url(kind: str, symbol: str) -> str:
         return f"wss://stream.binance.com:9443/ws/{lowered}@trade"
     if kind == "usdm-funding-mark":
         return f"wss://fstream.binance.com/market/ws/{lowered}@markPrice@1s"
+    if kind == "usdm-aggtrades":
+        return f"wss://fstream.binance.com/market/ws/{lowered}@aggTrade"
+    if kind == "usdm-klines-1m":
+        return f"wss://fstream.binance.com/market/ws/{lowered}@kline_1m"
     raise ValueError(f"unsupported stream: {kind}")
 
 
@@ -335,6 +339,7 @@ async def receive_observation_session(
     max_gap_ms: int,
     stop_at: float,
     last_trade_id: list[int | None],
+    last_closed_kline_open_ms: list[int | None],
     shutdown: asyncio.Event,
 ) -> None:
     url = websocket_url(kind, symbol)
@@ -363,24 +368,55 @@ async def receive_observation_session(
                 raise ConnectionError("observation receive gap exceeded configured limit")
             last_receive_mono = monotonic_ns
             update = json.loads(raw)
-            if kind == "spot-trades":
-                if update.get("e") != "trade" or update.get("s") != symbol:
-                    raise ValueError("unexpected Spot trade event identity")
-                trade_id = update.get("t")
+            if kind in {"spot-trades", "usdm-aggtrades"}:
+                expected_event = "trade" if kind == "spot-trades" else "aggTrade"
+                id_field = "t" if kind == "spot-trades" else "a"
+                market_name = "Spot" if kind == "spot-trades" else "USD-M aggregate trade"
+                if update.get("e") != expected_event or update.get("s") != symbol:
+                    raise ValueError(f"unexpected {market_name} event identity")
+                trade_id = update.get(id_field)
                 if not isinstance(trade_id, int):
-                    raise ValueError("Spot trade event has no integer trade ID")
+                    raise ValueError(f"{market_name} event has no integer trade ID")
                 previous = last_trade_id[0]
                 if previous is not None and trade_id != previous + 1:
                     capture.frame(received_ns, monotonic_ns, raw, session_id=session_id,
                                   event_time_ms=update.get("E"), trade_id=trade_id,
                                   accepted_for_sequence=False)
-                    capture.gap("spot_trade_id_discontinuity", expected_trade_id=previous + 1,
+                    capture.gap(f"{kind}_id_discontinuity", expected_trade_id=previous + 1,
                                 received_trade_id=trade_id, session_id=session_id)
-                    raise SequenceGap("Spot trade ID is discontinuous")
+                    raise SequenceGap(f"{market_name} ID is discontinuous")
                 last_trade_id[0] = trade_id
                 capture.frame(received_ns, monotonic_ns, raw, session_id=session_id,
                               event_time_ms=update.get("E"), trade_time_ms=update.get("T"),
-                              trade_id=trade_id, accepted_for_sequence=True)
+                              trade_id=trade_id, first_trade_id=update.get("f"),
+                              last_trade_id=update.get("l"), buyer_is_maker=update.get("m"),
+                              accepted_for_sequence=True)
+            elif kind == "usdm-klines-1m":
+                kline = update.get("k")
+                if (update.get("e") != "kline" or update.get("s") != symbol
+                        or not isinstance(kline, dict) or kline.get("s") != symbol
+                        or kline.get("i") != "1m"):
+                    raise ValueError("unexpected USD-M 1m kline event identity")
+                open_ms, close_ms, is_closed = kline.get("t"), kline.get("T"), kline.get("x")
+                if (not isinstance(open_ms, int) or not isinstance(close_ms, int)
+                        or not isinstance(is_closed, bool) or close_ms != open_ms + 59_999):
+                    raise ValueError("USD-M 1m kline has invalid window fields")
+                if is_closed:
+                    previous = last_closed_kline_open_ms[0]
+                    if previous is not None and open_ms != previous + 60_000:
+                        capture.frame(received_ns, monotonic_ns, raw, session_id=session_id,
+                                      event_time_ms=update.get("E"), kline_open_time_ms=open_ms,
+                                      kline_close_time_ms=close_ms, kline_closed=True,
+                                      accepted_for_sequence=False)
+                        capture.gap("usdm_kline_minute_discontinuity",
+                                    expected_open_time_ms=previous + 60_000,
+                                    received_open_time_ms=open_ms, session_id=session_id)
+                        raise SequenceGap("USD-M finalized 1m kline sequence is discontinuous")
+                    last_closed_kline_open_ms[0] = open_ms
+                capture.frame(received_ns, monotonic_ns, raw, session_id=session_id,
+                              event_time_ms=update.get("E"), kline_open_time_ms=open_ms,
+                              kline_close_time_ms=close_ms, kline_interval="1m",
+                              kline_closed=is_closed, accepted_for_sequence=True)
             else:
                 if update.get("e") != "markPriceUpdate" or update.get("s") != symbol:
                     raise ValueError("unexpected USD-M Mark Price event identity")
@@ -406,6 +442,7 @@ async def run_capture(args: argparse.Namespace) -> None:
     retry = 1.0
     attempt = 0
     last_trade_id: list[int | None] = [None]
+    last_closed_kline_open_ms: list[int | None] = [None]
     stop_reason = "duration_elapsed"
     try:
         while time.monotonic() < stop_at and not shutdown.is_set():
@@ -416,7 +453,8 @@ async def run_capture(args: argparse.Namespace) -> None:
                                                 stop_at, shutdown)
                 else:
                     await receive_observation_session(capture, args.kind, symbol, args.max_gap_ms,
-                                                      stop_at, last_trade_id, shutdown)
+                                                      stop_at, last_trade_id, last_closed_kline_open_ms,
+                                                      shutdown)
                 retry = 1.0
             except CaptureLimit:
                 stop_reason = "capture_byte_limit"
@@ -444,7 +482,7 @@ async def run_capture(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--kind", required=True, choices=("spot-depth", "usdm-depth", "spot-trades", "usdm-funding-mark"))
+    parser.add_argument("--kind", required=True, choices=("spot-depth", "usdm-depth", "spot-trades", "usdm-funding-mark", "usdm-aggtrades", "usdm-klines-1m"))
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--hot-root", default=os.environ.get("HOT_ROOT", "/var/lib/td-market-data/hot"))
     parser.add_argument("--max-gap-ms", type=int, default=5_000)
