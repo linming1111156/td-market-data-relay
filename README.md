@@ -141,6 +141,43 @@ python3 verify_spot_trades_dataset.py \
   --dataset /data/td-market-data-spot-trades/BTCUSDT-window-001
 ```
 
+USD-M aggregate trades can be exported from one or more consecutive raw
+captures. Pass captures in chronological order; the exporter verifies
+aggregate-trade ID continuity across file rotations and requires trades just
+before and after the requested half-open window:
+
+```sh
+python3 export_usdm_aggtrades_dataset.py \
+  --capture /data/td-market-data-recovered/usdm-aggtrades/BTCUSDT/CAPTURE-1.jsonl \
+  --capture /data/td-market-data-recovered/usdm-aggtrades/BTCUSDT/CAPTURE-2.jsonl \
+  --start 2026-11-01T00:05:00Z --end 2026-11-01T01:02:00Z \
+  --output /data/td-market-data-usdm-aggtrades/BTCUSDT-window-001
+
+python3 verify_usdm_aggtrades_dataset.py \
+  --dataset /data/td-market-data-usdm-aggtrades/BTCUSDT-window-001
+```
+
+The published trade records retain exchange event time, trade time, local
+receive wall/monotonic times, underlying trade-ID range, aggressor side, and
+raw-frame hash. Optional repeated `--source-capture` arguments let the
+independent verifier check the original capture inventory hashes.
+
+USD-M one-minute candles are published only from finalized (`x=true`) frames.
+The exporter requires a pre-window and post-window candle, exact one-minute
+coverage of the requested interval, valid OHLC/volume relationships, and
+separate exchange event and local availability times:
+
+```sh
+python3 export_usdm_klines_dataset.py \
+  --capture /data/td-market-data-recovered/usdm-klines-1m/BTCUSDT/CAPTURE-1.jsonl \
+  --capture /data/td-market-data-recovered/usdm-klines-1m/BTCUSDT/CAPTURE-2.jsonl \
+  --start 2026-11-01T00:05:00Z --end 2026-11-01T01:02:00Z \
+  --output /data/td-market-data-usdm-klines/BTCUSDT-window-001
+
+python3 verify_usdm_klines_dataset.py \
+  --dataset /data/td-market-data-usdm-klines/BTCUSDT-window-001
+```
+
 The trade Dataset is provenance-bound and immutable. It currently supports
 future market-flow research; the execution simulator below consumes the Spot
 depth Dataset.
