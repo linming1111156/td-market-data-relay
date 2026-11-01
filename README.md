@@ -492,13 +492,41 @@ python3 collector.py --kind spot-depth --symbol BTCUSDT \
 No credentials are needed for collection. `relay.py` requires a private
 `RELAY_API_KEY` of at least 32 characters.
 
+### Optional SOCKS5 proxy for collectors
+
+Set `TD_MARKET_DATA_SOCKS5_PROXY` to route the collector's Binance WebSocket
+and HTTPS REST requests through a SOCKS5 proxy. Use `socks5h://` when DNS should
+be resolved by the proxy. Leave it empty to keep the existing system-default
+proxy behavior. Relay API and local archive-sync traffic are not routed through
+this setting.
+
+For a collector running on the same host as a proxy listening on port 21001,
+use the loopback address; `0.0.0.0` is a listener bind address, not a client
+destination:
+
+```text
+TD_MARKET_DATA_SOCKS5_PROXY=socks5h://127.0.0.1:21001
+```
+
+For systemd-managed local collectors, put that setting in the root-owned,
+mode-0600 `/etc/td-market-data-relay/local-proxy.env`, then restart the
+collector units at a planned capture boundary. For Docker Compose, set the same
+variable in the untracked `.env` file and use
+`socks5h://host.docker.internal:21001`; Compose maps that name to the Docker
+host gateway for collector containers. Do not commit `.env` or proxy
+credentials. URL-encode reserved characters in proxy usernames or passwords.
+
+The proxy URL accepts `socks5://HOST:PORT` and `socks5h://HOST:PORT`, including
+SOCKS5 username/password credentials. The optional dependency is installed with
+the collector requirements. The proxy listener must be reachable from each
+collector's network namespace.
+
 ## Local continuous Spot capture
 
-When the relay VPS cannot access an exchange endpoint from its region, run the
-Spot collectors on a host whose direct Binance public-data access is permitted.
-This is a separate local service set; it does not configure a proxy, Cloudflare
-Tunnel, or Gateway/shadow/live trading path. The existing VPS deployment is
-unchanged.
+Run the local collectors on a host with a valid network path to the public
+market-data endpoints. This is a separate local service set; it does not
+configure a Cloudflare Tunnel or Gateway/shadow/live trading path. The existing
+VPS deployment is unchanged.
 
 The installer starts eight systemd-managed BTCUSDT collectors: Spot depth,
 trades, and one-minute klines; USD-M aggregate trades and one-minute klines;

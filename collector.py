@@ -5,20 +5,26 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import datetime as dt
 import decimal
 import fcntl
 import hashlib
+import http.client
+import io
 import json
 import os
 import signal
+import ssl
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any
 
+from python_socks.sync import Proxy as SocksProxy
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
@@ -26,6 +32,7 @@ from websockets.exceptions import ConnectionClosed
 MAX_FRAME_BYTES = 1_048_576
 QUEUE_LIMIT = 256
 UTC = dt.timezone.utc
+SOCKS5_PROXY_ENV = "TD_MARKET_DATA_SOCKS5_PROXY"
 SUPPORTED_STREAMS = frozenset({
     "spot-depth", "spot-trades", "spot-klines-1m",
     "usdm-depth", "usdm-funding-mark", "usdm-finalized-funding",
@@ -55,6 +62,72 @@ def sha256_file(path: Path) -> str:
 
 def compact_json(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode()
+
+
+def configured_socks5_proxy() -> str | None:
+    proxy_url = os.environ.get(SOCKS5_PROXY_ENV, "").strip()
+    if not proxy_url:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(proxy_url)
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError(f"{SOCKS5_PROXY_ENV} is not a valid SOCKS5 URL") from error
+    if (parsed.scheme not in {"socks5", "socks5h"} or not parsed.hostname or port is None
+            or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+        raise ValueError(
+            f"{SOCKS5_PROXY_ENV} must be socks5://HOST:PORT or socks5h://HOST:PORT"
+        )
+    return proxy_url
+
+
+@contextlib.contextmanager
+def open_request(request: urllib.request.Request, timeout: int):
+    proxy_url = configured_socks5_proxy()
+    if proxy_url is None:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            yield response
+        return
+
+    target = urllib.parse.urlsplit(request.full_url)
+    if target.scheme != "https" or not target.hostname:
+        raise ValueError("SOCKS5 collector requests must use HTTPS")
+    port = target.port or 443
+    proxy = SocksProxy.from_url(proxy_url)
+    proxy_socket = proxy.connect(dest_host=target.hostname, dest_port=port, timeout=timeout)
+    try:
+        tls_socket = ssl.create_default_context().wrap_socket(
+            proxy_socket, server_hostname=target.hostname
+        )
+    except BaseException:
+        proxy_socket.close()
+        raise
+
+    connection = http.client.HTTPConnection(target.hostname, port=port, timeout=timeout)
+    connection.sock = tls_socket
+    request_target = target.path or "/"
+    if target.query:
+        request_target += f"?{target.query}"
+    try:
+        connection.request(
+            request.get_method(), request_target, headers=dict(request.header_items())
+        )
+        response = connection.getresponse()
+        if response.status >= 400:
+            error_body = response.read(64 * 1024)
+            raise urllib.error.HTTPError(
+                request.full_url,
+                response.status,
+                response.reason,
+                response.headers,
+                io.BytesIO(error_body),
+            )
+        try:
+            yield response
+        finally:
+            response.close()
+    finally:
+        connection.close()
 
 
 class CaptureLimit(Exception):
@@ -97,6 +170,10 @@ class CaptureFile:
             "source_revision": source_revision,
             "collector_executable_path": str(Path(__file__).resolve()),
             "collector_executable_sha256": sha256_file(Path(__file__).resolve()),
+            "network_proxy_mode": (
+                urllib.parse.urlsplit(proxy_url).scheme
+                if (proxy_url := configured_socks5_proxy()) else "system_default"
+            ),
             "max_gap_ms": max_gap_ms,
             "max_output_bytes": max_bytes,
         }, reserve=4096)
@@ -175,7 +252,7 @@ def get_snapshot(kind: str, symbol: str) -> tuple[dict[str, Any], str]:
     endpoint, suffix = snapshot_request(kind, symbol)
     url = f"{endpoint}?{urllib.parse.urlencode({'symbol': symbol, 'limit': suffix.split('=')[1]})}"
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=15) as response:
+    with open_request(request, timeout=15) as response:
         body = response.read(4 * 1024 * 1024 + 1)
     if len(body) > 4 * 1024 * 1024:
         raise ValueError("depth snapshot exceeds four MiB")
@@ -191,7 +268,7 @@ def fetch_finalized_funding(symbol: str, start_time_ms: int) -> tuple[list[dict[
     query = urllib.parse.urlencode({"symbol": symbol, "startTime": start_time_ms, "limit": 1000})
     url = f"https://fapi.binance.com/fapi/v1/fundingRate?{query}"
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=15) as response:
+    with open_request(request, timeout=15) as response:
         status = response.status
         raw = response.read(MAX_FRAME_BYTES + 1)
     if status != 200:
@@ -359,6 +436,7 @@ async def receive_depth_session(
     url = websocket_url(kind, symbol)
     async with connect(
         url,
+        proxy=configured_socks5_proxy() or True,
         open_timeout=10,
         ping_interval=20,
         ping_timeout=20,
@@ -508,7 +586,8 @@ async def receive_observation_session(
     url = websocket_url(kind, symbol)
     async with connect(url, open_timeout=10, ping_interval=20, ping_timeout=20,
                        close_timeout=0.5, max_size=MAX_FRAME_BYTES,
-                       max_queue=32, compression=None) as websocket:
+                       max_queue=32, compression=None,
+                       proxy=configured_socks5_proxy() or True) as websocket:
         session_id = uuid.uuid4().hex
         capture.record("session_connected", recorded_at_unix_ns=now_ns(), session_id=session_id, url=url)
         last_receive_mono = time.monotonic_ns()
@@ -679,6 +758,7 @@ def main() -> None:
     args = parse_args()
     if args.max_gap_ms <= 0 or args.max_bytes < 8192 or args.duration_seconds <= 0 or args.poll_seconds <= 0:
         raise SystemExit("max gap, capture size, duration, and poll interval must be positive and bounded")
+    configured_socks5_proxy()
     asyncio.run(run_capture(args))
 
 

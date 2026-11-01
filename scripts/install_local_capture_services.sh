@@ -26,7 +26,8 @@ command -v "$UV_BIN" >/dev/null 2>&1 || { echo "uv is required" >&2; exit 1; }
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || { echo "$PYTHON_BIN is required" >&2; exit 1; }
 mountpoint -q /mnt/data || { echo "/mnt/data must be mounted before local capture is installed" >&2; exit 1; }
 [[ ! -L "$DATA_ROOT" ]] || { echo "$DATA_ROOT must not be a symlink" >&2; exit 1; }
-for path in "$INSTALL_ROOT/.venv" "$ETC_ROOT/local-capture.env" "$ETC_ROOT/local-relay.env"; do
+for path in "$INSTALL_ROOT/.venv" "$ETC_ROOT/local-capture.env" \
+  "$ETC_ROOT/local-proxy.env" "$ETC_ROOT/local-relay.env"; do
   [[ ! -L "$path" ]] || { echo "$path must not be a symlink" >&2; exit 1; }
 done
 
@@ -53,13 +54,18 @@ if [[ ! -e "$INSTALL_ROOT/.venv" ]]; then
     -r "$INSTALL_ROOT/requirements.txt"
   rm -rf "$INSTALL_ROOT/.uv-tmp"
 else
-  if ! "$INSTALL_ROOT/.venv/bin/python" -c 'import websockets, zstandard' >/dev/null 2>&1; then
+  if ! "$INSTALL_ROOT/.venv/bin/python" -c 'import python_socks, websockets, zstandard' >/dev/null 2>&1; then
     install -d -o root -g root -m 0755 "$INSTALL_ROOT/.uv-tmp"
     TMPDIR="$INSTALL_ROOT/.uv-tmp" UV_CACHE_DIR="$INSTALL_ROOT/.uv-cache" \
       "$UV_BIN" pip install --no-cache --python "$INSTALL_ROOT/.venv/bin/python" \
       -r "$INSTALL_ROOT/requirements.txt"
     rm -rf "$INSTALL_ROOT/.uv-tmp"
   fi
+fi
+
+if [[ ! -e "$ETC_ROOT/local-proxy.env" ]]; then
+  umask 077
+  : >"$ETC_ROOT/local-proxy.env"
 fi
 
 if [[ ! -e "$ETC_ROOT/local-capture.env" ]]; then
@@ -114,14 +120,17 @@ RELAY_API_KEY=$relay_key
 EOF
   unset relay_key
 fi
-chown root:root "$ETC_ROOT/local-capture.env" "$ETC_ROOT/local-relay.env"
-chmod 0600 "$ETC_ROOT/local-capture.env" "$ETC_ROOT/local-relay.env"
-/usr/bin/python3 - "$ETC_ROOT/local-capture.env" "$ETC_ROOT/local-relay.env" "$DATA_ROOT" <<'PY'
+chown root:root "$ETC_ROOT/local-capture.env" "$ETC_ROOT/local-proxy.env" "$ETC_ROOT/local-relay.env"
+chmod 0600 "$ETC_ROOT/local-capture.env" "$ETC_ROOT/local-proxy.env" "$ETC_ROOT/local-relay.env"
+/usr/bin/python3 - "$ETC_ROOT/local-capture.env" "$ETC_ROOT/local-relay.env" \
+  "$ETC_ROOT/local-proxy.env" "$DATA_ROOT" <<'PY'
 import re
 import sys
+from urllib.parse import urlsplit
 from pathlib import Path
 
-capture_path, relay_path, data_root = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+capture_path, relay_path, proxy_path = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+data_root = sys.argv[4]
 
 def read_env(path, allowed):
     values = {}
@@ -156,6 +165,25 @@ if any(relay[key] != value for key, value in expected.items()):
     raise SystemExit("local relay environment does not match the bounded loopback policy")
 if re.fullmatch(r"[0-9a-f]{64}", relay["RELAY_API_KEY"]) is None:
     raise SystemExit("local relay API key must be a 32-byte hexadecimal value")
+
+proxy_lines = [line for line in proxy_path.read_text().splitlines() if line and not line.startswith("#")]
+if any(not line.startswith("TD_MARKET_DATA_SOCKS5_PROXY=") for line in proxy_lines):
+    raise SystemExit("local proxy environment accepts only TD_MARKET_DATA_SOCKS5_PROXY")
+if sum(line.startswith("TD_MARKET_DATA_SOCKS5_PROXY=") for line in proxy_lines) > 1:
+    raise SystemExit("local proxy environment contains duplicate SOCKS5 settings")
+if proxy_lines:
+    proxy_url = proxy_lines[0].split("=", 1)[1]
+    if proxy_url:
+        try:
+            parsed = urlsplit(proxy_url)
+            valid_port = parsed.port is not None
+        except ValueError:
+            valid_port = False
+            parsed = None
+        if (not valid_port or parsed.scheme not in {"socks5", "socks5h"}
+                or not parsed.hostname or parsed.path not in {"", "/"}
+                or parsed.query or parsed.fragment):
+            raise SystemExit("local SOCKS5 proxy setting must be socks5://HOST:PORT or socks5h://HOST:PORT")
 PY
 
 install -o root -g root -m 0644 \
