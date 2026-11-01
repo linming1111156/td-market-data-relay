@@ -1,0 +1,38 @@
+[Unit]
+Description=Local bounded public market capture (%i)
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/mnt/data/td-market-data-local
+
+[Service]
+Type=simple
+User=td-marketdata
+Group=td-marketdata
+EnvironmentFile=/etc/td-market-data-relay/local-capture.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+WorkingDirectory=/opt/td-market-data-relay
+ExecStart=/opt/td-market-data-relay/.venv/bin/python3 /opt/td-market-data-relay/collector.py --kind %i --symbol BTCUSDT --duration-seconds 3600 --max-bytes 268435456 --poll-seconds 60
+Restart=always
+RestartSec=5s
+KillSignal=SIGINT
+TimeoutStopSec=35s
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/mnt/data/td-market-data-local
+MemoryMax=256M
+CPUQuota=50%
+TasksMax=32
+LimitNOFILE=1024
+LimitFSIZE=536870912
+
+[Install]
+WantedBy=multi-user.target

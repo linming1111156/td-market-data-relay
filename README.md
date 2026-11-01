@@ -477,3 +477,52 @@ python3 collector.py --kind spot-depth --symbol BTCUSDT \
 
 No credentials are needed for collection. `relay.py` requires a private
 `RELAY_API_KEY` of at least 32 characters.
+
+## Local continuous Spot capture
+
+When the relay VPS cannot access an exchange endpoint from its region, run the
+Spot collectors on a host whose direct Binance public-data access is permitted.
+This is a separate local service set; it does not configure a proxy, Cloudflare
+Tunnel, or Gateway/shadow/live trading path. The existing VPS deployment is
+unchanged.
+
+The installer starts three systemd-managed BTCUSDT collectors: Spot depth,
+trades, and one-minute klines. Each collector writes a one-hour JSONL slice,
+records event and receive times plus disconnect/gap information, then restarts
+to begin a new slice. The local archive keeps one hour of raw files and zstd
+archives for up to 73 hours, with 1 GiB hot and 12 GiB compressed caps. Early
+discard is recorded by the same bounded loss ledger used by the relay. Data is
+stored under `/mnt/data/td-market-data-local`; the relay API binds only to
+`127.0.0.1:18080`.
+
+On a local Debian/Ubuntu host with Python 3.13, `uv`, and systemd, run:
+
+```sh
+sudo scripts/install_local_capture_services.sh
+```
+
+The installer reuses `/opt/td-market-data-relay/.venv`, creates a random local
+relay key in a mode-0600 file, and does not print the key. Check collection and
+retention with:
+
+```sh
+systemctl status td-market-data-local-relay.service \
+  'td-market-data-local-collector@spot-depth.service' \
+  'td-market-data-local-collector@spot-trades.service' \
+  'td-market-data-local-collector@spot-klines-1m.service'
+find /mnt/data/td-market-data-local -maxdepth 4 -type f -printf '%TY-%Tm-%TdT%TH:%TM:%TS %s %p\n'
+```
+
+Stop the local Spot capture with:
+
+```sh
+systemctl disable --now \
+  td-market-data-local-collector@spot-depth.service \
+  td-market-data-local-collector@spot-trades.service \
+  td-market-data-local-collector@spot-klines-1m.service
+```
+
+Leave the local relay running so it can archive the final closed slices. The
+capture files are not automatically promoted to research Datasets: exporters
+must still verify the exact future window, lifecycle, hashes, and sequence
+continuity.

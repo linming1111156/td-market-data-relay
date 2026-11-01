@@ -1,0 +1,34 @@
+[Unit]
+Description=Loopback-only local market capture archive and retention service
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/mnt/data/td-market-data-local
+
+[Service]
+Type=simple
+User=td-marketdata
+Group=td-marketdata
+EnvironmentFile=/etc/td-market-data-relay/local-relay.env
+WorkingDirectory=/opt/td-market-data-relay
+ExecStart=/opt/td-market-data-relay/.venv/bin/python3 /opt/td-market-data-relay/relay.py
+Restart=always
+RestartSec=5s
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/mnt/data/td-market-data-local
+MemoryMax=128M
+CPUQuota=25%
+TasksMax=16
+LimitNOFILE=256
+
+[Install]
+WantedBy=multi-user.target
