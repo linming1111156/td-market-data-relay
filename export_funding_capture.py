@@ -108,7 +108,9 @@ def export_capture(source: Path, output: Path, symbol: str, max_gap_ms: int | No
 
     def write_record(stream: Any, record: dict[str, Any]) -> None:
         nonlocal output_bytes
-        encoded = (json.dumps(record, separators=(",", ":"), ensure_ascii=False, allow_nan=False) + "\n").encode()
+        compatible_record = {"capture_schema_version": 1, **record}
+        encoded = (json.dumps(compatible_record, separators=(",", ":"), ensure_ascii=False,
+                             allow_nan=False) + "\n").encode()
         stream.write(encoded)
         output_bytes += len(encoded)
 

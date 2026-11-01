@@ -78,6 +78,7 @@ class FundingCaptureExportTests(unittest.TestCase):
             self.assertEqual(count, 2)
             self.assertEqual(hashlib.sha256(output.read_bytes()).hexdigest(), digest)
             rows = [json.loads(line) for line in output.read_text().splitlines()]
+            self.assertTrue(all(row["capture_schema_version"] == 1 for row in rows))
             self.assertEqual(rows[0]["record_type"], "capture_started")
             self.assertEqual(rows[0]["source_url"], URL)
             self.assertEqual(rows[0]["source_capture_sha256"], hashlib.sha256(source.read_bytes()).hexdigest())

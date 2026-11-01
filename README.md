@@ -87,9 +87,13 @@ capture can be converted to the Rust project's strict observed-Mark JSONL
 format. Run `python3 export_funding_capture.py --capture CAPTURE.jsonl --output
 NEW-VALIDATED.jsonl`; the exporter rejects reconnects, sequence/clock gaps,
 truncated lines, mismatched raw-frame hashes, or a changed source during
-conversion. The original raw capture remains untouched. The resulting file can
-be passed to the existing `trading-futures-dataset --write-observed-mark-price`
-workflow.
+conversion. The original raw capture remains untouched. The normalized file
+includes `capture_schema_version: 1` and can be passed both to the existing
+`trading-futures-dataset --write-observed-mark-price` workflow and to the
+Gateway's independent `extract_usdm_funding_settlement_schedule.py` schedule
+extractor. The latter derives expected settlement times from fresh,
+pre-settlement Mark observations, independently of the finalized Funding API
+rows.
 
 For USD-M execution replay, `export_usdm_depth_dataset.py` publishes the same
 capture format as an immutable `td_gateway_usdm_depth_dataset` directory. It
