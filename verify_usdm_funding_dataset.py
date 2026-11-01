@@ -83,7 +83,7 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
         raise DatasetRejected("manifest window is invalid")
     expected = manifest.get("expected_settlement_times_ms")
     schedule = manifest.get("settlement_observation_evidence")
-    if not isinstance(expected, list) or not expected or not isinstance(schedule, list) or len(schedule) != len(expected):
+    if not isinstance(expected, list) or not isinstance(schedule, list) or len(schedule) != len(expected):
         raise DatasetRejected("settlement schedule is absent or malformed")
     max_age_ms = require_uint(manifest.get("max_pre_settlement_observation_age_ms"), "maximum Mark age")
     timestamp_tolerance_ms = require_uint(
@@ -150,7 +150,7 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
             events.append(event)
             event_hasher.update(raw)
             logical.update(raw)
-    if not events or [event["scheduled_funding_time_ms"] for event in events] != expected:
+    if [event["scheduled_funding_time_ms"] for event in events] != expected:
         raise DatasetRejected("event rows do not exactly match the expected settlement schedule")
     if manifest.get("event_count") != len(events):
         raise DatasetRejected("manifest event count mismatch")
