@@ -413,13 +413,13 @@ async def run_finalized_funding_capture(args: argparse.Namespace, shutdown: asyn
 def websocket_url(kind: str, symbol: str) -> str:
     lowered = symbol.lower()
     if kind == "spot-depth":
-        return f"wss://stream.binance.com:9443/ws/{lowered}@depth@100ms"
+        return f"wss://stream.binance.com:443/ws/{lowered}@depth@100ms"
     if kind == "usdm-depth":
         return f"wss://fstream.binance.com/public/ws/{lowered}@depth@100ms"
     if kind == "spot-trades":
-        return f"wss://stream.binance.com:9443/ws/{lowered}@trade"
+        return f"wss://stream.binance.com:443/ws/{lowered}@trade"
     if kind == "spot-klines-1m":
-        return f"wss://stream.binance.com:9443/ws/{lowered}@kline_1m"
+        return f"wss://stream.binance.com:443/ws/{lowered}@kline_1m"
     if kind == "usdm-funding-mark":
         return f"wss://fstream.binance.com/market/ws/{lowered}@markPrice@1s"
     if kind == "usdm-aggtrades":
