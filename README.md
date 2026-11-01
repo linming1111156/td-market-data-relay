@@ -364,6 +364,24 @@ record a discard safely, it keeps the capture and reports that the quota could
 not be reclaimed; disk pressure is surfaced instead of hiding the missing
 capture.
 
+Before publishing a research window, check the relevant stream's loss ledger.
+For example, verify depth, Mark, and finalized Funding coverage separately:
+
+```sh
+python3 audit_capture_loss_ledger.py \
+  --loss-ledger /data/td-market-data-recovered/.relay-losses.jsonl \
+  --stream usdm-depth --symbol BTCUSDT \
+  --start 2026-11-01T00:00:00Z --end 2026-11-01T01:00:00Z
+```
+
+Repeat with `usdm-funding-mark` and `usdm-finalized-funding`. The audit fails
+when a matching lost capture overlaps the half-open window or a matching
+record lacks capture lifecycle bounds. A clear result means only that no
+recorded quota loss overlaps; it is not proof of complete capture. Dataset
+exporters still enforce source coverage, sequence continuity, and time-window
+boundaries. Run sync continuously from the start of collection so its local
+ledger retains losses that later age out of the VPS's 73-hour loss index.
+
 ## Local recovery
 
 `sync.py` downloads retained capture files, verifies their SHA-256, decompresses

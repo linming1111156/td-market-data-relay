@@ -96,6 +96,43 @@ def prune_loss_ledger(now_ns: int | None = None) -> None:
         _write_loss_rows(retained)
 
 
+def capture_lifecycle_bounds(path: Path) -> tuple[int, int]:
+    def records(stream):
+        first = last = None
+        total = 0
+        for line_number, raw in enumerate(stream, 1):
+            total += len(raw)
+            if total > 256 * 1024 * 1024 or len(raw) > 2 * 1024 * 1024 or not raw.endswith(b"\n"):
+                raise OSError("capture lifecycle scan encountered a truncated or oversized record")
+            try:
+                row = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise OSError("capture lifecycle scan encountered invalid JSON") from error
+            if not isinstance(row, dict) or row.get("schema") != "td_public_market_capture_record":
+                raise OSError("capture lifecycle scan encountered an unsupported record")
+            if first is None:
+                first = row
+            last = row
+        if (not isinstance(first, dict) or first.get("record_type") != "capture_started"
+                or not isinstance(last, dict) or last.get("record_type") != "capture_stopped"):
+            raise OSError("capture lacks a complete start/stop lifecycle")
+        started_ns, stopped_ns = first.get("recorded_at_unix_ns"), last.get("recorded_at_unix_ns")
+        if (not isinstance(started_ns, int) or isinstance(started_ns, bool)
+                or not isinstance(stopped_ns, int) or isinstance(stopped_ns, bool)
+                or started_ns < 0 or stopped_ns < started_ns):
+            raise OSError("capture lifecycle timestamps are invalid")
+        return started_ns, stopped_ns
+
+    if path.suffix == ".zst":
+        with path.open("rb") as source:
+            with zstandard.ZstdDecompressor().stream_reader(source) as decoded:
+                import io
+
+                return records(io.BufferedReader(decoded))
+    with path.open("rb") as source:
+        return records(source)
+
+
 def record_early_discard(root: Path, path: Path, reason: str) -> bool:
     relative = path.relative_to(root)
     parts = relative.parts
@@ -106,6 +143,8 @@ def record_early_discard(root: Path, path: Path, reason: str) -> bool:
     if match is None:
         raise OSError(f"cannot record early discard for malformed capture name: {relative}")
     raw_hash: str | None = None
+    started_ns: int | None = None
+    stopped_ns: int | None = None
     if root == ARCHIVE:
         meta_path = path.with_name(path.name + ".meta.json")
         try:
@@ -113,13 +152,28 @@ def record_early_discard(root: Path, path: Path, reason: str) -> bool:
             candidate_hash = metadata.get("raw_sha256")
             if isinstance(candidate_hash, str) and re.fullmatch(r"[0-9a-f]{64}", candidate_hash):
                 raw_hash = candidate_hash
+            candidate_start, candidate_stop = metadata.get("capture_started_at_ns"), metadata.get("capture_stopped_at_ns")
+            if (isinstance(candidate_start, int) and not isinstance(candidate_start, bool)
+                    and isinstance(candidate_stop, int) and not isinstance(candidate_stop, bool)
+                    and 0 <= candidate_start <= candidate_stop):
+                started_ns, stopped_ns = candidate_start, candidate_stop
         except (OSError, json.JSONDecodeError):
             pass
+    try:
+        if started_ns is None or stopped_ns is None:
+            started_ns, stopped_ns = capture_lifecycle_bounds(path)
+        if raw_hash is None:
+            raw_hash = sha256_file(path) if root == HOT else None
+    except OSError as error:
+        print(f"early discard refused because capture lifecycle is unverifiable: {error}", flush=True)
+        return False
     now_ns = time.time_ns()
     row: dict[str, object] = {"schema": LOSS_SCHEMA, "version": 1,
                               "capture_id": match.group(2), "stream": stream,
                               "symbol": symbol, "path": str(relative),
                               "reason": reason, "discarded_at_ns": now_ns,
+                              "capture_started_at_ns": started_ns,
+                              "capture_stopped_at_ns": stopped_ns,
                               "raw_sha256": raw_hash}
     existing = _read_loss_rows()
     if any(item.get("capture_id") == match.group(2) and item.get("path") == str(relative)

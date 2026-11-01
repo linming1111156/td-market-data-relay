@@ -81,8 +81,6 @@ def record_remote_losses(output: Path, losses: list[dict]) -> int:
                     and re.fullmatch(r"[0-9a-f]{64}", str(row.get("raw_sha256"))) is None)):
             raise RuntimeError("relay returned a malformed capture-loss record")
         validated.append(row)
-    if not validated:
-        return 0
     ledger = output / ".relay-losses.jsonl"
     if ledger.is_symlink():
         raise RuntimeError("local relay-loss evidence path is a symlink")
