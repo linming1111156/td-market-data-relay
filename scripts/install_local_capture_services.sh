@@ -175,7 +175,9 @@ for stream in \
   spot-klines-1m \
   usdm-aggtrades \
   usdm-klines-1m \
-  usdm-finalized-funding; do
+  usdm-finalized-funding \
+  usdm-depth \
+  usdm-funding-mark; do
   systemctl enable --now "td-market-data-local-collector@${stream}.service"
 done
 
@@ -189,4 +191,6 @@ systemctl --no-pager --full status td-market-data-local-relay.service \
   td-market-data-local-collector@spot-klines-1m.service \
   td-market-data-local-collector@usdm-aggtrades.service \
   td-market-data-local-collector@usdm-klines-1m.service \
-  td-market-data-local-collector@usdm-finalized-funding.service
+  td-market-data-local-collector@usdm-finalized-funding.service \
+  td-market-data-local-collector@usdm-depth.service \
+  td-market-data-local-collector@usdm-funding-mark.service

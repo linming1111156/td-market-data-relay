@@ -502,8 +502,10 @@ hour of raw files and zstd archives for up to 73 hours, with 1 GiB hot and
 12 GiB compressed caps. Early discard is recorded by the same bounded loss
 ledger used by the relay. Data is stored under `/mnt/data/td-market-data-local`;
 the relay API binds only to `127.0.0.1:18080`. USD-M Mark Price and depth
-capture continue through the separate Gateway research capture schedule, so
-the local installer does not create duplicate streams for them.
+capture run as local collectors alongside Spot depth/trades/klines, USD-M
+aggregate trades/klines, and finalized Funding history. The installer enables
+all eight streams so a fresh installation has the complete public-market
+capture set without depending on a separate Gateway research schedule.
 
 On a local Debian/Ubuntu host with Python 3.13, `uv`, and systemd, run:
 
@@ -522,7 +524,9 @@ systemctl status td-market-data-local-relay.service \
   'td-market-data-local-collector@spot-klines-1m.service' \
   'td-market-data-local-collector@usdm-aggtrades.service' \
   'td-market-data-local-collector@usdm-klines-1m.service' \
-  'td-market-data-local-collector@usdm-finalized-funding.service'
+  'td-market-data-local-collector@usdm-finalized-funding.service' \
+  'td-market-data-local-collector@usdm-depth.service' \
+  'td-market-data-local-collector@usdm-funding-mark.service'
 find /mnt/data/td-market-data-local -maxdepth 4 -type f -printf '%TY-%Tm-%TdT%TH:%TM:%TS %s %p\n'
 ```
 
@@ -535,7 +539,9 @@ systemctl disable --now \
   td-market-data-local-collector@spot-klines-1m.service \
   td-market-data-local-collector@usdm-aggtrades.service \
   td-market-data-local-collector@usdm-klines-1m.service \
-  td-market-data-local-collector@usdm-finalized-funding.service
+  td-market-data-local-collector@usdm-finalized-funding.service \
+  td-market-data-local-collector@usdm-depth.service \
+  td-market-data-local-collector@usdm-funding-mark.service
 ```
 
 Leave the local relay running so it can archive the final closed slices. The
