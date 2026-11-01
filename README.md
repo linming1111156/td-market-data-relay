@@ -96,6 +96,18 @@ extractor. The latter derives expected settlement times from fresh,
 pre-settlement Mark observations, independently of the finalized Funding API
 rows.
 
+After the Gateway schedule extractor has produced a one-settlement schedule,
+`fetch_finalized_funding_evidence.py --schedule SCHEDULE.json
+--output-directory NEW-EVIDENCE-DIR` fetches the exact public Funding History
+row and writes its unchanged response bytes beside the HTTP status, retrieval
+time, request URL, byte count, and SHA-256 manifest. It refuses to fetch before
+the completed Mark capture/settlement or to publish a missing, duplicate, or
+different settlement. Pass these two outputs to the Gateway
+`trading-futures-dataset --parse-funding-settlements` command, then publish the
+matched records with `--write-funding-settlements` and the same Mark capture
+and schedule. The one-settlement bound makes this helper's raw response
+correspond to exactly one auditable API request.
+
 For USD-M execution replay, `export_usdm_depth_dataset.py` publishes the same
 capture format as an immutable `td_gateway_usdm_depth_dataset` directory. It
 requires a REST snapshot before the requested window, a validated snapshot
