@@ -23,6 +23,7 @@ RELAY_RETENTION_NS = 73 * 3600 * 1_000_000_000
 LOSS_SCHEMA = "td_market_data_relay_early_discard_v1"
 MAX_LOSS_LEDGER_BYTES = 16 * 1024 * 1024
 MAX_CAPTURE_LINE_BYTES = 2 * 1024 * 1024
+RECOVERY_SCHEMA = "td_market_data_relay_recovery_provenance_v1"
 
 
 def continuous_scan_start(now_ns: int, since_ns: int) -> int:
@@ -188,6 +189,53 @@ def publish_without_overwrite(source: Path, target: Path) -> None:
         os.close(directory)
 
 
+def write_recovery_provenance(target: Path, entry: dict, relay_host: str) -> None:
+    """Bind a recovered raw capture to its local recovery time and source hash."""
+    recovery_path = target.with_name(target.name + ".recovery.json")
+    expected = {
+        "schema": RECOVERY_SCHEMA,
+        "version": 1,
+        "capture_id": str(entry["id"]),
+        "origin": "vps_recovered",
+        "recovered_at_unix_ns": time.time_ns(),
+        "raw_sha256": str(entry["raw_sha256"]),
+        "relay_host": relay_host,
+    }
+    if recovery_path.exists() or recovery_path.is_symlink():
+        if recovery_path.is_symlink() or not recovery_path.is_file():
+            raise RuntimeError(f"recovery provenance is not a regular file: {recovery_path}")
+        try:
+            prior = json.loads(recovery_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"recovery provenance is invalid: {recovery_path}") from error
+        if (prior.get("schema") != RECOVERY_SCHEMA or prior.get("version") != 1
+                or prior.get("capture_id") != expected["capture_id"]
+                or prior.get("origin") != "vps_recovered"
+                or prior.get("raw_sha256") != expected["raw_sha256"]
+                or not isinstance(prior.get("recovered_at_unix_ns"), int)
+                or isinstance(prior.get("recovered_at_unix_ns"), bool)
+                or prior["recovered_at_unix_ns"] <= 0
+                or not isinstance(prior.get("relay_host"), str)):
+            raise RuntimeError(f"recovery provenance does not match remote capture: {recovery_path}")
+        return
+    encoded = json.dumps(expected, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    temp = recovery_path.with_name(recovery_path.name + f".tmp-{os.getpid()}")
+    remove_abandoned_temp(temp)
+    try:
+        with temp.open("xb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temp, recovery_path)
+        directory = os.open(recovery_path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default=os.environ.get("TD_RELAY_BASE_URL"),
@@ -213,6 +261,7 @@ def main() -> None:
     local_http = parsed_base.hostname in {"localhost", "127.0.0.1", "::1"}
     if parsed_base.scheme != "https" and not (parsed_base.scheme == "http" and local_http):
         raise SystemExit("relay base URL must use HTTPS (HTTP is allowed only for localhost)")
+    relay_host = parsed_base.hostname or "unknown"
     if args.continuous and (args.state_file is None or args.poll_seconds < 30):
         raise SystemExit("continuous mode requires --state-file and --poll-seconds >= 30")
     if args.archive_root is not None and (args.archive_root.is_symlink() or not args.archive_root.is_dir()):
@@ -262,6 +311,7 @@ def main() -> None:
             if target.exists():
                 if digest(target) == entry["raw_sha256"]:
                     if capture_is_closed(target):
+                        write_recovery_provenance(target, entry, relay_host)
                         skipped += 1
                     else:
                         skipped += 1
@@ -322,6 +372,7 @@ def main() -> None:
                         print(f"deferred incomplete remote capture: {stream_name}/{symbol}/{filename}", flush=True)
                         continue
                     publish_without_overwrite(temp, target)
+                write_recovery_provenance(target, entry, relay_host)
                 restored += 1
                 print(f"restored {stream_name}/{symbol}/{target.name}", flush=True)
             finally:

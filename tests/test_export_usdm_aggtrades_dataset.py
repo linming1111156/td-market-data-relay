@@ -111,6 +111,27 @@ class UsdmAggregateTradesDatasetTests(unittest.TestCase):
                         (BASE_MS + 1_000) * 1_000_000,
                         (BASE_MS + 2_000) * 1_000_000)
 
+    def test_recovered_capture_preserves_receive_time_and_delays_availability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture, output = root / "capture.jsonl", root / "dataset"
+            make_capture(capture)
+            raw_hash = hashlib.sha256(capture.read_bytes()).hexdigest()
+            recovery_ns = (BASE_MS + 3_000) * 1_000_000
+            (root / "capture.jsonl.recovery.json").write_text(json.dumps({
+                "schema": "td_market_data_relay_recovery_provenance_v1", "version": 1,
+                "capture_id": raw_hash[:32], "origin": "vps_recovered",
+                "recovered_at_unix_ns": recovery_ns, "raw_sha256": raw_hash,
+                "relay_host": "relay.example",
+            }))
+            publish([capture], output, SYMBOL,
+                    (BASE_MS + 1_000) * 1_000_000,
+                    (BASE_MS + 2_000) * 1_000_000)
+            event = json.loads((output / "events.jsonl").read_text().splitlines()[0])
+            self.assertLess(event["received_at_ns"], event["available_at_ns"])
+            self.assertEqual(event["available_at_ns"], recovery_ns)
+            verify_dataset(output, [capture])
+
 
 if __name__ == "__main__":
     unittest.main()

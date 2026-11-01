@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from export_spot_depth_dataset import canonical, file_sha256, source_revision
+from capture_recovery import capture_id_for, recovery_provenance
 
 
 MAX_CAPTURE_BYTES = 256 * 1024 * 1024
@@ -119,6 +120,9 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
     with (stage / "events.jsonl").open("xb", buffering=0) as target:
         for capture in captures:
             source_hash = file_sha256(capture)
+            capture_id = capture_id_for(capture, source_hash)
+            recovery = recovery_provenance(capture, source_hash, capture_id)
+            recovered_at_ns = recovery["recovered_at_unix_ns"] if recovery else 0
             start: dict[str, Any] | None = None
             stop: dict[str, Any] | None = None
             session: str | None = None
@@ -227,9 +231,11 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
                             aggressor = "BUY"
                         event_ns = trade_ms * 1_000_000
                         normalized = {"record_type": "aggregate_trade", "symbol": symbol,
+                                      "capture_id": capture_id,
                                       "aggregate_trade_id": trade_id, "first_trade_id": first_trade_id,
                                       "last_trade_id": last_trade_id, "exchange_event_time_ns": event_ms * 1_000_000,
                                       "trade_time_ns": event_ns, "received_at_ns": receive_ns,
+                                      "available_at_ns": max(receive_ns, event_ms * 1_000_000, recovered_at_ns),
                                       "received_monotonic_ns": receive_mono, "price": price,
                                       "quantity": quantity, "buyer_is_maker": frame["m"],
                                       "aggressor_side": aggressor,
@@ -293,10 +299,13 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
             if file_sha256(capture) != source_hash:
                 raise AggregateTradesRejected(f"capture changed while exporting: {capture}")
             capture_sources.append({"path": str(capture), "sha256": source_hash,
+                                    "capture_id": capture_id,
                                     "capture_started_at_ns": uint(start["recorded_at_unix_ns"], "capture start", 1),
                                     "capture_stopped_at_ns": uint(stop["recorded_at_unix_ns"], "capture stop", 1),
                                     "collector_code_sha256": start["collector_executable_sha256"],
-                                    "collector_source_revision": start["source_revision"],
+                            "collector_source_revision": start["source_revision"],
+                            "origin": "vps_recovered" if recovery else "local",
+                            "recovered_at_unix_ns": recovered_at_ns or None,
                                     "observation_count": frames})
         target.flush()
         os.fsync(target.fileno())

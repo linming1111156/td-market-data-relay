@@ -109,6 +109,32 @@ access. A failed build publishes no final Dataset directory. Temporary staging
 must be created on the selected data volume beside the output, never in system
 `/tmp`; staging is bounded and removed after failure.
 
+Phase 2 implements this entry point:
+
+```sh
+uv run python build_usdm_rl_dataset.py \
+  --capture usdm-funding-mark=/data/relay/archive/usdm-funding-mark/BTCUSDT/mark.jsonl.zst \
+  --capture usdm-funding-mark=/data/relay/archive/usdm-funding-mark/BTCUSDT/mark-next.jsonl.zst \
+  --capture usdm-aggtrades=/data/relay/archive/usdm-aggtrades/BTCUSDT/trades.jsonl.zst \
+  --capture usdm-finalized-funding=/data/relay/archive/usdm-finalized-funding/BTCUSDT/funding.jsonl.zst \
+  --start 2026-11-01T00:00:00Z --end 2026-11-02T00:00:00Z \
+  --output /data/td-market-data/datasets/usdm-2026-11-01
+
+uv run python verify_usdm_rl_dataset.py \
+  --dataset /data/td-market-data/datasets/usdm-2026-11-01
+```
+
+Repeat `--capture` for every contiguous segment. The source archive metadata
+sidecar must be adjacent to each `.jsonl.zst`. The optional
+`usdm-klines-1m` stream can be supplied the same way. Local recovery sync writes
+a hash-bound `.recovery.json` sidecar; the relay carries that provenance into
+archive metadata. Recovered data keeps its exchange receive time and receives
+an effective `available_at_ns` no earlier than the local recovery time. Child
+exporters reject capture sequence, timing, coverage, or funding-schedule gaps.
+The root verifier checks child manifests against the root stream/source list.
+Published Dataset files and directories are read-only and the final directory
+is atomically created without replacement.
+
 ## Training and comparison handoff
 
 The Dataset manifest hash is the immutable input identity for training and

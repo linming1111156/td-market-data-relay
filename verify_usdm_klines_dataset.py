@@ -95,7 +95,7 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
             if version == 2:
                 received_ns = uint(event.get("received_at_ns"), "receive time")
                 invalid_availability = (
-                    available_ns != max(received_ns, event_ms * 1_000_000)
+                    available_ns < max(received_ns, event_ms * 1_000_000)
                     or event_ms * 1_000_000 < (close_ms + 1) * 1_000_000
                     or event_ms * 1_000_000 > received_ns + 2_000_000_000
                 )
@@ -176,12 +176,30 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
     sources = manifest.get("capture_sources")
     if not isinstance(sources, list) or not sources:
         raise DatasetRejected("capture provenance missing")
-    hashes, code_hashes = [], set()
+    hashes, code_hashes, source_by_id = [], set(), {}
     for source in sources:
         if not isinstance(source, dict) or not isinstance(source.get("collector_source_revision"), str):
             raise DatasetRejected("capture provenance row invalid")
         hashes.append(require_hash(source.get("sha256"), "source capture hash"))
         code_hashes.add(require_hash(source.get("collector_code_sha256"), "collector code hash"))
+        capture_id = source.get("capture_id")
+        if not isinstance(capture_id, str) or len(capture_id) != 32 or capture_id in source_by_id:
+            raise DatasetRejected("capture provenance ID is invalid or duplicated")
+        if source.get("origin") == "vps_recovered":
+            recovered_at = uint(source.get("recovered_at_unix_ns"), "capture recovery time")
+        elif source.get("origin") == "local" and source.get("recovered_at_unix_ns") is None:
+            recovered_at = 0
+        else:
+            raise DatasetRejected("capture origin/recovery time is invalid")
+        source_by_id[capture_id] = recovered_at
+    for line_number, event in enumerate(rows, 1):
+        recovered_at = source_by_id.get(event.get("capture_id"))
+        if recovered_at is None:
+            raise DatasetRejected(f"event {line_number} references an unknown capture")
+        expected_available = max(event["received_at_ns"], event["exchange_event_time_ms"] * 1_000_000,
+                                 recovered_at)
+        if event["available_at_ns"] != expected_available:
+            raise DatasetRejected(f"event {line_number} availability time mismatch")
     if manifest.get("source_capture_set_sha256") != hashlib.sha256(canonical(hashes)).hexdigest():
         raise DatasetRejected("source capture-set fingerprint mismatch")
     if manifest.get("collector_code_sha256") != sorted(code_hashes):

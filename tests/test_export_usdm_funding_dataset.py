@@ -7,6 +7,7 @@ from pathlib import Path
 
 from export_usdm_funding_dataset import FundingDatasetRejected, publish
 from verify_usdm_funding_dataset import DatasetRejected, verify_dataset
+from capture_recovery import capture_id_for
 
 
 SYMBOL = "BTCUSDT"
@@ -104,12 +105,21 @@ class UsdmFundingDatasetTests(unittest.TestCase):
             funding = root / "funding.jsonl"
             make_mark_capture(mark, start_ns, end_ns)
             make_funding_capture(funding, start_ns, FUNDING_NS + 1_000_000_000)
+            funding_hash = hashlib.sha256(funding.read_bytes()).hexdigest()
+            recovery_ns = FUNDING_NS + 2_000_000_000
+            funding.with_name(funding.name + ".recovery.json").write_text(json.dumps({
+                "schema": "td_market_data_relay_recovery_provenance_v1", "version": 1,
+                "capture_id": capture_id_for(funding, funding_hash), "origin": "vps_recovered",
+                "recovered_at_unix_ns": recovery_ns, "raw_sha256": funding_hash,
+                "relay_host": "relay.example",
+            }))
             output = root / "dataset"
             manifest = publish([mark], [funding], output, SYMBOL, start_ns, end_ns)
             self.assertEqual(manifest["event_count"], 1)
             event = json.loads((output / "events.jsonl").read_text())
             self.assertEqual(event["funding_time_ns"], FUNDING_NS)
-            self.assertGreater(event["available_at_ns"], event["funding_time_ns"])
+            self.assertGreater(event["received_at_ns"], event["funding_time_ns"])
+            self.assertEqual(event["available_at_ns"], recovery_ns)
             self.assertEqual(manifest["expected_settlement_times_ms"], [FUNDING_MS])
             self.assertTrue(manifest["logical_fingerprint_sha256"])
             verified = verify_dataset(output, [mark, funding])

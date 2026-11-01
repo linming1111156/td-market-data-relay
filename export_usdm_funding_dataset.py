@@ -9,6 +9,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import urllib.parse
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from export_spot_depth_dataset import canonical, file_sha256, source_revision
+from capture_recovery import capture_id_for, recovery_provenance
 
 
 MAX_CAPTURE_BYTES = 256 * 1024 * 1024
@@ -118,6 +120,9 @@ def mark_observations(paths: list[Path], symbol: str) -> tuple[list[dict[str, An
     for path in sorted((item.resolve(strict=True) for item in paths), key=lambda item: item.name):
         rows, capture_hash, bytes_before_footer = capture_records(path)
         life = lifecycle(rows, "usdm-funding-mark", symbol, path, bytes_before_footer)
+        capture_id = capture_id_for(path, capture_hash)
+        recovery = recovery_provenance(path, capture_hash, capture_id)
+        recovered_at_ns = recovery["recovered_at_unix_ns"] if recovery else 0
         connected = disconnected = False
         session: str | None = None
         previous_received_ns = previous_mono_ns = previous_event_ms = None
@@ -177,7 +182,9 @@ def mark_observations(paths: list[Path], symbol: str) -> tuple[list[dict[str, An
                     finite_decimal(frame.get(key), f"Mark {key}", positive=True)
                 finite_decimal(frame.get("r"), "Mark funding rate")
                 observations.append({"event_time_ms": event_ms, "funding_time_ms": funding_ms,
-                                     "received_at_ns": received_ns, "session_id": session,
+                                     "received_at_ns": received_ns,
+                                     "available_at_ns": max(received_ns, event_ms * 1_000_000, recovered_at_ns),
+                                     "capture_id": capture_id, "session_id": session,
                                      "payload_sha256": row["raw_frame_sha256"]})
                 previous_event_ms, previous_received_ns, previous_mono_ns = event_ms, received_ns, mono_ns
                 count += 1
@@ -199,7 +206,10 @@ def mark_observations(paths: list[Path], symbol: str) -> tuple[list[dict[str, An
                            "capture_started_at_ns": life["started_ns"],
                            "capture_stopped_at_ns": life["stopped_ns"],
                            "collector_code_sha256": life["collector_code_sha256"],
-                           "source_revision": life["source_revision"], "record_count": count})
+                           "source_revision": life["source_revision"], "record_count": count,
+                           "capture_id": capture_id,
+                           "origin": "vps_recovered" if recovery else "local",
+                           "recovered_at_unix_ns": recovered_at_ns or None})
     observations.sort(key=lambda item: item["received_at_ns"])
     if not observations:
         raise FundingDatasetRejected("no Mark Price observations were supplied")
@@ -255,6 +265,9 @@ def funding_rows(paths: list[Path], symbol: str, schedule: list[dict[str, Any]],
     for path in sorted((item.resolve(strict=True) for item in paths), key=lambda item: item.name):
         rows, capture_hash, bytes_before_footer = capture_records(path)
         life = lifecycle(rows, "usdm-finalized-funding", symbol, path, bytes_before_footer)
+        capture_id = capture_id_for(path, capture_hash)
+        recovery = recovery_provenance(path, capture_hash, capture_id)
+        recovered_at_ns = recovery["recovered_at_unix_ns"] if recovery else 0
         cursor_record: dict[str, Any] | None = None
         page_count = 0
         last_page_received_ns: int | None = None
@@ -320,9 +333,11 @@ def funding_rows(paths: list[Path], symbol: str, schedule: list[dict[str, Any]],
                     if matches:
                         scheduled_ms = matches[0]
                         normalized = {"funding_time_ms": time_ms,
+                                      "capture_id": capture_id,
                                       "scheduled_funding_time_ms": scheduled_ms,
                                       "funding_time_offset_ms": time_ms - scheduled_ms,
-                                      "available_at_ns": received_ns,
+                                      "received_at_ns": received_ns,
+                                      "available_at_ns": max(received_ns, time_ms * 1_000_000, recovered_at_ns),
                                       "funding_rate": rate, "mark_price": mark,
                                       "rate_type": item.get("rateType", "unknown"),
                                       "api_response_sha256": row["raw_response_sha256"],
@@ -347,6 +362,9 @@ def funding_rows(paths: list[Path], symbol: str, schedule: list[dict[str, Any]],
                            "capture_stopped_at_ns": life["stopped_ns"],
                            "collector_code_sha256": life["collector_code_sha256"],
                            "source_revision": life["source_revision"],
+                           "capture_id": capture_id,
+                           "origin": "vps_recovered" if recovery else "local",
+                           "recovered_at_unix_ns": recovered_at_ns or None,
                            "initial_request_start_time_ms": cursor_record["request_start_time_ms"],
                            "page_count": page_count})
     if not pages:
@@ -391,10 +409,12 @@ def publish(mark_paths: list[Path], funding_paths: list[Path], output: Path, sym
         with events_path.open("xb", buffering=0) as stream:
             for settlement in settlements:
                 record = {"record_type": "funding_settlement", "symbol": symbol,
+                          "capture_id": settlement["capture_id"],
                           "funding_time_ms": settlement["funding_time_ms"],
                           "funding_time_ns": settlement["funding_time_ms"] * 1_000_000,
                           "scheduled_funding_time_ms": settlement["scheduled_funding_time_ms"],
                           "funding_time_offset_ms": settlement["funding_time_offset_ms"],
+                          "received_at_ns": settlement["received_at_ns"],
                           "available_at_ns": settlement["available_at_ns"],
                           "funding_rate": settlement["funding_rate"],
                           "mark_price": settlement["mark_price"], "rate_type": settlement["rate_type"],

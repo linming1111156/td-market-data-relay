@@ -68,6 +68,28 @@ class QuietRelayHandler(relay.Handler):
 
 
 class RelayTests(unittest.TestCase):
+    def test_archive_preserves_vps_recovery_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            hot, archive = base / "hot", base / "archive"
+            path, original = write_capture(hot)
+            capture_id = path.name.split("-")[-1].split(".")[0]
+            recovery = {"schema": "td_market_data_relay_recovery_provenance_v1", "version": 1,
+                        "capture_id": capture_id, "origin": "vps_recovered",
+                        "recovered_at_unix_ns": time.time_ns(),
+                        "raw_sha256": hashlib.sha256(original).hexdigest(), "relay_host": "relay.example"}
+            path.with_name(path.name + ".recovery.json").write_text(json.dumps(recovery))
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(relay, "HOT", hot))
+                stack.enter_context(patch.object(relay, "ARCHIVE", archive))
+                stack.enter_context(patch.object(relay, "MAX_ARCHIVE_BYTES", 1024 * 1024))
+                stack.enter_context(patch.object(relay, "MAX_HOT_BYTES", 1024 * 1024))
+                relay.compress_old_captures()
+            archived = archive / "usdm-depth" / "BTCUSDT" / (path.name + ".zst")
+            metadata = json.loads(archived.with_name(archived.name + ".meta.json").read_text())
+            self.assertEqual(metadata["recovery_provenance"], recovery)
+            self.assertFalse(path.with_name(path.name + ".recovery.json").exists())
+
     def test_archive_round_trip_auth_and_sync(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)

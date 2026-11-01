@@ -87,11 +87,13 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
             event_ns = uint(event.get("exchange_event_time_ns"), "exchange event time")
             trade_ns = uint(event.get("trade_time_ns"), "trade time")
             receive_ns = uint(event.get("received_at_ns"), "receive time")
+            available_ns = uint(event.get("available_at_ns"), "availability time")
             mono_ns = uint(event.get("received_monotonic_ns"), "monotonic receive time")
             first_id = uint(event.get("first_trade_id"), "first underlying trade ID")
             last_id = uint(event.get("last_trade_id"), "last underlying trade ID")
             if (first_id > last_id or event_ns > receive_ns + 2_000_000_000
                     or not start_ns <= trade_ns < end_ns or receive_ns < trade_ns
+                    or available_ns < max(receive_ns, event_ns)
                     or not isinstance(event.get("buyer_is_maker"), bool)
                     or event.get("aggressor_side") != ("SELL" if event["buyer_is_maker"] else "BUY")):
                 raise DatasetRejected(f"events.jsonl line {line_number} invalid timestamps/trade fields")
@@ -142,6 +144,7 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
         raise DatasetRejected("capture provenance missing")
     hashes = []
     code_hashes = set()
+    source_by_id: dict[str, dict[str, Any]] = {}
     for source in captures:
         if (not isinstance(source, dict)
                 or not isinstance(source.get("collector_source_revision"), str)
@@ -149,6 +152,27 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
             raise DatasetRejected("capture provenance row invalid")
         hashes.append(require_hash(source.get("sha256"), "source capture hash"))
         code_hashes.add(require_hash(source.get("collector_code_sha256"), "collector code hash"))
+        capture_id = source.get("capture_id")
+        if not isinstance(capture_id, str) or len(capture_id) != 32 or capture_id in source_by_id:
+            raise DatasetRejected("capture provenance ID is invalid or duplicated")
+        if source.get("origin") == "vps_recovered":
+            recovered = uint(source.get("recovered_at_unix_ns"), "capture recovery time")
+        elif source.get("origin") == "local" and source.get("recovered_at_unix_ns") is None:
+            recovered = 0
+        else:
+            raise DatasetRejected("capture origin/recovery time is invalid")
+        source_by_id[capture_id] = {"recovered_at_unix_ns": recovered}
+    with events_path.open("rb") as stream:
+        for line_number, raw in enumerate(stream, 1):
+            event = json.loads(raw)
+            capture_id = event.get("capture_id")
+            source = source_by_id.get(capture_id)
+            if source is None:
+                raise DatasetRejected(f"events.jsonl line {line_number} references an unknown capture")
+            expected_available = max(event["received_at_ns"], event["exchange_event_time_ns"],
+                                     source["recovered_at_unix_ns"])
+            if event.get("available_at_ns") != expected_available:
+                raise DatasetRejected(f"events.jsonl line {line_number} availability time mismatch")
     if manifest.get("source_capture_set_sha256") != hashlib.sha256(canonical(hashes)).hexdigest():
         raise DatasetRejected("source capture-set fingerprint mismatch")
     if manifest.get("collector_code_sha256") != sorted(code_hashes):

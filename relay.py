@@ -252,6 +252,26 @@ def compress_old_captures() -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         temp = destination.with_name(destination.name + f".tmp-{os.getpid()}")
         meta_path = destination.with_name(destination.name + ".meta.json")
+        recovery_path = path.with_name(path.name + ".recovery.json")
+        recovery_provenance = None
+        if recovery_path.exists() or recovery_path.is_symlink():
+            try:
+                if recovery_path.is_symlink() or not recovery_path.is_file():
+                    raise ValueError("recovery provenance is not a regular file")
+                recovery_provenance = json.loads(recovery_path.read_text())
+                if (recovery_provenance.get("schema") != "td_market_data_relay_recovery_provenance_v1"
+                        or recovery_provenance.get("version") != 1
+                        or recovery_provenance.get("capture_id") != path.name.split("-")[-1].split(".")[0]
+                        or recovery_provenance.get("origin") != "vps_recovered"
+                        or not isinstance(recovery_provenance.get("recovered_at_unix_ns"), int)
+                        or isinstance(recovery_provenance.get("recovered_at_unix_ns"), bool)
+                        or recovery_provenance["recovered_at_unix_ns"] <= 0
+                        or not isinstance(recovery_provenance.get("raw_sha256"), str)
+                        or len(recovery_provenance["raw_sha256"]) != 64):
+                    raise ValueError("recovery provenance fields are invalid")
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                print(f"capture recovery provenance rejected; leaving raw capture: {relative}: {error}", flush=True)
+                continue
         meta_temp = meta_path.with_name(meta_path.name + f".tmp-{os.getpid()}")
         try:
             # A source file still exists if a prior rotation was interrupted.
@@ -262,11 +282,13 @@ def compress_old_captures() -> None:
                     prior_valid = (prior.get("schema") == "td_market_data_archive_metadata_v1"
                                    and prior.get("capture_id") == path.name.split("-")[-1].split(".")[0]
                                    and prior.get("compressed_sha256") == sha256_file(destination)
-                                   and prior.get("raw_sha256") == sha256_file(path))
+                                   and prior.get("raw_sha256") == sha256_file(path)
+                                   and prior.get("recovery_provenance") == recovery_provenance)
                 except (OSError, json.JSONDecodeError):
                     prior_valid = False
                 if prior_valid:
                     path.unlink()
+                    recovery_path.unlink(missing_ok=True)
                     continue
                 destination.unlink(missing_ok=True)
                 meta_path.unlink(missing_ok=True)
@@ -291,6 +313,11 @@ def compress_old_captures() -> None:
                 raw.flush()
                 os.fsync(raw.fileno())
             size = temp.stat().st_size
+            if (recovery_provenance is not None
+                    and recovery_provenance.get("raw_sha256") != source_digest.hexdigest()):
+                temp.unlink(missing_ok=True)
+                print(f"capture recovery hash mismatch; leaving raw capture: {relative}", flush=True)
+                continue
             start_time = capture_started_at(path)
             os.utime(temp, (start_time, start_time))
             while total + size > MAX_ARCHIVE_BYTES and archived:
@@ -312,7 +339,9 @@ def compress_old_captures() -> None:
                         "capture_id": path.name.split("-")[-1].split(".")[0],
                         "raw_sha256": source_digest.hexdigest(), "raw_size_bytes": source_bytes,
                         "compressed_sha256": sha256_file(temp), "compressed_size_bytes": size,
-                        "captured_at_unix_seconds": start_time}
+                        "captured_at_unix_seconds": start_time,
+                        **({"recovery_provenance": recovery_provenance}
+                           if recovery_provenance is not None else {})}
             with meta_temp.open("xb") as metadata_file:
                 metadata_file.write(json.dumps(metadata, separators=(",", ":")).encode() + b"\n")
                 metadata_file.flush()
@@ -321,6 +350,7 @@ def compress_old_captures() -> None:
             os.utime(destination, (start_time, start_time))
             os.replace(meta_temp, meta_path)
             path.unlink()
+            recovery_path.unlink(missing_ok=True)
             total += size
         finally:
             temp.unlink(missing_ok=True)
@@ -345,6 +375,7 @@ def enforce_hot_cap() -> None:
                 if not record_early_discard(HOT, path, "hot_storage_quota"):
                     continue
                 path.unlink()
+                path.with_name(path.name + ".recovery.json").unlink(missing_ok=True)
                 total -= size
                 print(f"hot storage cap discarded oldest capture: {path.relative_to(HOT)}", flush=True)
         except FileNotFoundError:

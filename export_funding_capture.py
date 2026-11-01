@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from capture_recovery import capture_id_for, recovery_provenance
+
 
 MAX_CAPTURE_BYTES = 256 * 1024 * 1024
 SOURCE = "binance_usdm_mark_price_websocket"
@@ -86,6 +88,9 @@ def export_capture(source: Path, output: Path, symbol: str, max_gap_ms: int | No
     if source.stat().st_size > MAX_CAPTURE_BYTES:
         raise InvalidCapture("source capture exceeds the 256 MiB validation bound")
     source_hash_before = sha256_file(source)
+    capture_id = capture_id_for(source, source_hash_before)
+    recovery = recovery_provenance(source, source_hash_before, capture_id)
+    recovered_at_ns = recovery["recovered_at_unix_ns"] if recovery else 0
     converter_hash = sha256_file(Path(__file__).resolve())
     fd, temp_name = tempfile.mkstemp(prefix=".funding-export-", suffix=".jsonl", dir=output.parent)
     temp = Path(temp_name)
@@ -151,7 +156,6 @@ def export_capture(source: Path, output: Path, symbol: str, max_gap_ms: int | No
                     write_record(target, {
                         "record_type": "capture_started",
                         "recorded_at_unix_ns": require_int(record, "recorded_at_unix_ns", line_number),
-                        "process_id": os.getpid(),
                         "collector_executable_path": capture_code_path,
                         "collector_executable_sha256": capture_code_hash,
                         "converter_executable_path": str(Path(__file__).resolve()),
@@ -161,6 +165,9 @@ def export_capture(source: Path, output: Path, symbol: str, max_gap_ms: int | No
                         "max_gap_ms": capture_max_gap,
                         "max_output_bytes": MAX_CAPTURE_BYTES,
                         "source_capture_sha256": source_hash_before,
+                        "capture_id": capture_id,
+                        "origin": "vps_recovered" if recovery else "local",
+                        "recovered_at_unix_ns": recovered_at_ns or None,
                         "source_capture_code_revision": record.get("source_revision", "unknown"),
                     })
                 elif kind == "session_connected":
@@ -239,6 +246,7 @@ def export_capture(source: Path, output: Path, symbol: str, max_gap_ms: int | No
                         "symbol": symbol,
                         "exchange_event_time_ms": event_ms,
                         "received_at_unix_ns": received_ns,
+                        "available_at_unix_ns": max(received_ns, event_ns, recovered_at_ns),
                         "received_monotonic_ns": received_mono_ns,
                         "next_funding_time_ms": next_funding_ms,
                         "mark_price": mark,

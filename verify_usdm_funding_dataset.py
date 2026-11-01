@@ -128,11 +128,12 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
             time_ns = require_uint(event.get("funding_time_ns"), "Funding time ns")
             scheduled_ms = require_uint(event.get("scheduled_funding_time_ms"), "scheduled Funding time")
             offset_ms = event.get("funding_time_offset_ms")
+            received_ns = require_uint(event.get("received_at_ns"), "Funding source receive time")
             available_ns = require_uint(event.get("available_at_ns"), "Funding availability time")
             raw_row = event.get("raw_funding_row")
             if not isinstance(raw_row, dict):
                 raise DatasetRejected(f"events.jsonl line {line} raw Funding row is missing")
-            if (time_ns != time_ms * 1_000_000 or available_ns < time_ns
+            if (time_ns != time_ms * 1_000_000 or available_ns < max(time_ns, received_ns)
                     or raw_row.get("fundingTime") != time_ms
                     or scheduled_ms not in expected
                     or isinstance(offset_ms, bool) or not isinstance(offset_ms, int)
@@ -163,6 +164,7 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
     if not isinstance(mark_sources, list) or not mark_sources or not isinstance(funding_sources, list) or not funding_sources:
         raise DatasetRejected("capture source provenance is missing")
     all_hashes: list[str] = []
+    funding_by_id: dict[str, dict[str, Any]] = {}
     for source in mark_sources + funding_sources:
         if not isinstance(source, dict):
             raise DatasetRejected("capture source entry is invalid")
@@ -172,6 +174,26 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
         require_uint(source.get("capture_stopped_at_ns"), "source capture stop")
         if not isinstance(source.get("source_revision"), str) or not source["source_revision"]:
             raise DatasetRejected("source revision is missing")
+        if source in funding_sources:
+            capture_id = source.get("capture_id")
+            if not isinstance(capture_id, str) or len(capture_id) != 32 or capture_id in funding_by_id:
+                raise DatasetRejected("Funding source capture ID is invalid or duplicated")
+            origin = source.get("origin")
+            if origin == "vps_recovered":
+                recovered_at = require_uint(source.get("recovered_at_unix_ns"), "Funding recovery time")
+            elif origin == "local" and source.get("recovered_at_unix_ns") is None:
+                recovered_at = 0
+            else:
+                raise DatasetRejected("Funding source origin/recovery time is invalid")
+            funding_by_id[capture_id] = {"recovered_at_unix_ns": recovered_at}
+    for line, event in enumerate(events, 1):
+        source = funding_by_id.get(event.get("capture_id"))
+        if source is None:
+            raise DatasetRejected(f"Funding event {line} references an unknown source capture")
+        expected_available = max(event["received_at_ns"], event["funding_time_ns"],
+                                 source["recovered_at_unix_ns"])
+        if event["available_at_ns"] != expected_available:
+            raise DatasetRejected(f"Funding event {line} availability time mismatch")
     expected_sources_sha = hashlib.sha256(canonical(all_hashes)).hexdigest()
     if manifest.get("source_capture_set_sha256") != expected_sources_sha:
         raise DatasetRejected("source capture-set fingerprint mismatch")
