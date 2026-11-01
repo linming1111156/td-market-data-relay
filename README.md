@@ -112,7 +112,10 @@ For USD-M execution replay, `export_usdm_depth_dataset.py` publishes the same
 capture format as an immutable `td_gateway_usdm_depth_dataset` directory. It
 requires a REST snapshot before the requested window, a validated snapshot
 bridge before the window, a clean one-session update chain, receive clocks with
-no gaps or clock jumps, and a capture stop before the window end. It creates
+no gaps or clock jumps, and a capture stop before the window end. It rolls
+validated pre-window updates into a point-in-time book snapshot at the window
+start, then publishes only in-window updates. The original raw capture hash
+remains bound into the Dataset manifest. It creates
 `snapshot.json`, `events.jsonl`, `health.jsonl`, and a fingerprinted
 `manifest.json` without changing the raw capture:
 

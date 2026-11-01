@@ -5,6 +5,11 @@ The Python VPS capture can now be converted into the existing Rust
 The exporter recomputes snapshot/frame hashes, verifies raw REST snapshot
 agreement, snapshot bridge, `pu` sequence continuity, receive and monotonic
 clock order, availability order, crossed-book state, and clean capture stop.
+It rolls the verified pre-window update chain into a point-in-time Dataset
+snapshot, so the published event file begins at the requested replay boundary
+while `source_capture_sha256` continues to bind the full raw capture. This
+keeps source warmup out of the replay event limit without weakening validation
+of the source sequence or book state.
 It rejects any gap or reconnect and publishes with a no-replace atomic rename.
 
 Acceptance performed:

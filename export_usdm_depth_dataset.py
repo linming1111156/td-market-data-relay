@@ -206,11 +206,15 @@ def publish_dataset(capture: Path, output: Path, symbol: str, start_ns: int, end
     snapshot: dict[str, Any] | None = None
     snapshot_ns = -1
     snapshot_id = -1
+    window_snapshot: dict[str, Any] | None = None
+    book_bids: dict[str, Decimal] = {}
+    book_asks: dict[str, Decimal] = {}
     connected = disconnected = False
     raw_observation_count = 0
     capture_bytes_before_stop: int | None = None
     bridge_receive_ns: int | None = None
     accepted_events: list[dict[str, Any]] = []
+    accepted_frame_count = 0
     previous_id: int | None = None
     previous_event_ms: int | None = None
     previous_receive_ns: int | None = None
@@ -272,6 +276,8 @@ def publish_dataset(capture: Path, output: Path, symbol: str, start_ns: int, end
                 snapshot_ns = received_ns
                 snapshot = {"last_update_id": snapshot_id, "bids": bids, "asks": asks,
                             "received_at_ns": received_ns}
+                book_bids = {price: Decimal(quantity) for price, quantity in bids}
+                book_asks = {price: Decimal(quantity) for price, quantity in asks}
             elif kind == "market_frame":
                 raw_observation_count += 1
                 if not connected or disconnected or snapshot is None or row.get("session_id") != session_id:
@@ -355,17 +361,38 @@ def publish_dataset(capture: Path, output: Path, symbol: str, start_ns: int, end
                         levels.append({"side": side, "price": price, "quantity": quantity})
                 if not levels:
                     raise CaptureRejected(f"line {line_number}: depth update has no changed levels")
-                accepted_events.append({"event_ts_ms": event_ms, "first_update_id": first_id,
-                                        "final_update_id": final_id, "prev_final_update_id": frame.get("pu"),
-                                        "duplicate_level_rows": duplicate_count, "levels": levels,
-                                        "receive_ts_ms": receive_ns // 1_000_000,
-                                        "receive_mono_ns": receive_mono_ns})
+                if effective_ns >= start_ns and window_snapshot is None:
+                    window_snapshot = {
+                        "last_update_id": previous_id if previous_id is not None else snapshot_id,
+                        "bids": [[price, format(quantity, "f")] for price, quantity in
+                                 sorted(book_bids.items(), key=lambda item: Decimal(item[0]), reverse=True)],
+                        "asks": [[price, format(quantity, "f")] for price, quantity in
+                                 sorted(book_asks.items(), key=lambda item: Decimal(item[0]))],
+                        "received_at_ns": previous_receive_ns if previous_receive_ns is not None else snapshot_ns,
+                    }
+                if effective_ns >= start_ns:
+                    accepted_events.append({"event_ts_ms": event_ms, "first_update_id": first_id,
+                                            "final_update_id": final_id, "prev_final_update_id": frame.get("pu"),
+                                            "duplicate_level_rows": duplicate_count, "levels": levels,
+                                            "receive_ts_ms": receive_ns // 1_000_000,
+                                            "receive_mono_ns": receive_mono_ns})
+                for change in levels:
+                    book = book_bids if change["side"] == "BID" else book_asks
+                    quantity = Decimal(change["quantity"])
+                    if quantity == 0:
+                        book.pop(change["price"], None)
+                    else:
+                        book[change["price"]] = quantity
+                if (not book_bids or not book_asks
+                        or max(map(Decimal, book_bids)) >= min(map(Decimal, book_asks))):
+                    raise CaptureRejected(f"line {line_number}: depth replay produces an empty or crossed book")
                 previous_id = final_id
                 previous_event_ms = event_ms
                 previous_receive_ns = receive_ns
                 previous_receive_mono_ns = receive_mono_ns
                 previous_effective_ns = effective_ns
-                if len(accepted_events) > MAX_EVENTS:
+                accepted_frame_count += 1
+                if accepted_frame_count > MAX_EVENTS:
                     raise CaptureRejected("depth event count exceeds Dataset limit")
             elif kind == "gap_detected" or kind == "clock_discontinuity":
                 raise CaptureRejected(f"line {line_number}: capture contains {kind}")
@@ -387,12 +414,15 @@ def publish_dataset(capture: Path, output: Path, symbol: str, start_ns: int, end
             else:
                 raise CaptureRejected(f"line {line_number}: unsupported record type {kind!r}")
 
-    if not (started and connected and disconnected and stopped and snapshot and session_id):
+    if not (started and connected and disconnected and stopped and snapshot and window_snapshot and session_id):
         raise CaptureRejected("capture is incomplete")
     if hash_file(capture) != capture_sha:
         raise CaptureRejected("source capture changed while it was being converted")
     if bridge_receive_ns is None or previous_id is None or not accepted_events:
         raise CaptureRejected("capture has no snapshot-bridged depth events")
+    snapshot = window_snapshot
+    snapshot_id = snapshot["last_update_id"]
+    snapshot_ns = snapshot["received_at_ns"]
     stopped_ns = integer(stopped.get("recorded_at_unix_ns"), "capture stop time", 0)
     stop_mono = integer(stopped.get("recorded_at_monotonic_ns"), "capture stop monotonic time", 0)
     start_mono = integer(started.get("recorded_at_monotonic_ns"), "capture start monotonic time", 1)
@@ -491,8 +521,7 @@ def publish_dataset(capture: Path, output: Path, symbol: str, start_ns: int, end
 
     revision = source_revision()
     health_issue_count = 0
-    warmup_count = sum(max(event["event_ts_ms"], event["receive_ts_ms"]) < start_ms
-                       for event in accepted_events)
+    warmup_count = 0
     manifest = {"schema": "td_gateway_usdm_depth_dataset", "version": 2,
                 "exchange": "BINANCE", "market": "USD_M", "contract": "PERPETUAL",
                 "symbol": symbol, "session_id": session_id, "window": window,
