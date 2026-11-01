@@ -492,7 +492,7 @@ This is a separate local service set; it does not configure a proxy, Cloudflare
 Tunnel, or Gateway/shadow/live trading path. The existing VPS deployment is
 unchanged.
 
-The installer starts six systemd-managed BTCUSDT collectors: Spot depth,
+The installer starts eight systemd-managed BTCUSDT collectors: Spot depth,
 trades, and one-minute klines; USD-M aggregate trades and one-minute klines;
 and finalized USD-M Funding settlements. Each collector writes a one-hour
 JSONL slice, records event and receive times plus disconnect/gap information,
@@ -509,6 +509,17 @@ capture set without depending on a separate Gateway research schedule. Hourly
 file rotation bounds WebSocket shutdown to 500 ms and service restart delay to
 100 ms, keeping the receive gap within the configured five-second budget under
 normal network conditions.
+
+For an archived VPS capture, `scripts/stage_verified_capture_archive.py`
+checks the zstd file and metadata hashes, restores the verified raw JSONL under
+a caller-selected research-input root, and prints the staged path for export:
+
+```sh
+python3 scripts/stage_verified_capture_archive.py \
+  --capture /data/hot/spot-depth/BTCUSDT/CAPTURE.jsonl \
+  --hot-root /data/hot --archive-root /data/archive \
+  --staging-root /data/research-inputs
+```
 
 On a local Debian/Ubuntu host with Python 3.13, `uv`, and systemd, run:
 
