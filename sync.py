@@ -14,6 +14,16 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from collector import SUPPORTED_STREAMS as COLLECTOR_SUPPORTED_STREAMS
+
+SUPPORTED_STREAMS = COLLECTOR_SUPPORTED_STREAMS
+RELAY_RETENTION_NS = 73 * 3600 * 1_000_000_000
+
+
+def continuous_scan_start(now_ns: int, since_ns: int) -> int:
+    """Reconcile every remotely retained capture on each successful poll."""
+    return max(since_ns, now_ns - RELAY_RETENTION_NS, 0)
+
 
 def request(url: str, api_key: str, timeout: int = 60):
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
@@ -80,7 +90,7 @@ def main() -> None:
             symbol = entry.get("symbol")
             relative_parts = Path(entry.get("path", "")).parts
             filename = relative_parts[-1] if len(relative_parts) == 3 else ""
-            if (stream_name not in {"spot-depth", "usdm-depth", "spot-trades", "usdm-funding-mark"}
+            if (stream_name not in SUPPORTED_STREAMS
                     or not isinstance(symbol, str) or re.fullmatch(r"[A-Z0-9]{1,32}", symbol) is None
                     or relative_parts[:2] != (stream_name, symbol)
                     or re.fullmatch(rf"{re.escape(symbol)}-[0-9]{{8}}T[0-9]{{6}}Z-[0-9a-f]{{32}}(?:\.jsonl(?:\.zst)?)?", filename) is None
@@ -160,7 +170,7 @@ def main() -> None:
     while True:
         scan_from = cursor
         if args.continuous:
-            scan_from = max(0, cursor - 2 * 3600 * 1_000_000_000)
+            scan_from = continuous_scan_start(time.time_ns(), args.since_ns)
         try:
             restore_since(scan_from)
             if not args.continuous:

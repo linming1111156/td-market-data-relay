@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import sync
+from collector import SUPPORTED_STREAMS as COLLECTOR_SUPPORTED_STREAMS
 
 
 class RelayHandler(BaseHTTPRequestHandler):
@@ -38,6 +39,24 @@ class RelayHandler(BaseHTTPRequestHandler):
 
 
 class SyncTests(unittest.TestCase):
+    def test_continuous_reconciliation_rechecks_the_full_remote_retention(self):
+        now_ns = 2_000_000_000_000_000_000
+        self.assertEqual(sync.continuous_scan_start(now_ns, 0),
+                         now_ns - 73 * 3600 * 1_000_000_000)
+        self.assertEqual(sync.continuous_scan_start(now_ns, now_ns - 60_000_000_000),
+                         now_ns - 60_000_000_000)
+
+    def test_recovery_accepts_every_configured_collector_stream(self):
+        collector_streams = COLLECTOR_SUPPORTED_STREAMS
+        self.assertEqual(sync.SUPPORTED_STREAMS, collector_streams)
+        payload = b'{"record_type":"capture_stopped"}\n'
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for stream in sorted(collector_streams):
+                with self.subTest(stream=stream):
+                    output = self.run_sync(directory, self.entry_for(payload, stream=stream), payload)
+                    self.assertEqual(len(list((output / stream / "BTCUSDT").glob("*.jsonl"))), 1)
+
     def run_sync(self, directory: Path, entry: dict, payload: bytes, exit_expected=0):
         RelayHandler.index_body = json.dumps({
             "schema": "td_market_data_relay_index_v1", "captures": [entry],
@@ -63,11 +82,11 @@ class SyncTests(unittest.TestCase):
             thread.join(timeout=2)
         return output
 
-    def entry_for(self, payload: bytes, path: str | None = None) -> dict:
+    def entry_for(self, payload: bytes, path: str | None = None, stream: str = "spot-depth") -> dict:
         filename = "BTCUSDT-20261031T120000Z-0123456789abcdef0123456789abcdef.jsonl"
-        relative = path or f"spot-depth/BTCUSDT/{filename}"
+        relative = path or f"{stream}/BTCUSDT/{filename}"
         digest = hashlib.sha256(payload).hexdigest()
-        return {"id": "0123456789abcdef0123456789abcdef", "stream": "spot-depth",
+        return {"id": "0123456789abcdef0123456789abcdef", "stream": stream,
                 "symbol": "BTCUSDT", "path": relative, "compressed": False,
                 "size_bytes": len(payload), "modified_at_unix_ns": 1, "sha256": digest,
                 "raw_sha256": digest}

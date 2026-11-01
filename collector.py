@@ -26,6 +26,11 @@ from websockets.exceptions import ConnectionClosed
 MAX_FRAME_BYTES = 1_048_576
 QUEUE_LIMIT = 256
 UTC = dt.timezone.utc
+SUPPORTED_STREAMS = frozenset({
+    "spot-depth", "spot-trades", "spot-klines-1m",
+    "usdm-depth", "usdm-funding-mark", "usdm-finalized-funding",
+    "usdm-aggtrades", "usdm-klines-1m",
+})
 
 
 def now_ns() -> int:
@@ -628,7 +633,7 @@ async def run_capture(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--kind", required=True, choices=("spot-depth", "usdm-depth", "spot-trades", "spot-klines-1m", "usdm-funding-mark", "usdm-aggtrades", "usdm-klines-1m", "usdm-finalized-funding"))
+    parser.add_argument("--kind", required=True, choices=sorted(SUPPORTED_STREAMS))
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--hot-root", default=os.environ.get("HOT_ROOT", "/var/lib/td-market-data/hot"))
     parser.add_argument("--max-gap-ms", type=int, default=5_000)

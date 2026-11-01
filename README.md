@@ -340,18 +340,23 @@ TD_RELAY_API_KEY='your-private-key' python3 sync.py \
 
 It verifies an existing local file against the remote raw-data hash before
 skipping it. A different local file with the same capture name is reported and
-left untouched. This command is a recovery primitive; a
-scheduled local reconciliation service still needs to be connected to the
-existing local capture layout and its gap-detection rules before it can replace
-or repair those files automatically.
+left untouched. The output root can be the existing local capture root when its
+`stream/symbol/file.jsonl` layout matches; alternatively, keep it in a separate
+recovery root and let Dataset exporters read both roots. Restored files retain
+their original capture identities and are never merged into or substituted for
+another capture.
 
 For a long-running local recovery worker, set `TD_RELAY_BASE_URL` and
 `TD_RELAY_API_KEY`, then add `--continuous --poll-seconds 300 --state-file
 /var/lib/td-market-data-recovered/cursor.json`. It polls every five minutes by
-default, overlaps the previous two hours to catch captures that were still
-active at the last scan, verifies remote and decompressed hashes, and never
-overwrites a conflicting local file. The cursor advances only after a complete
-successful scan; failures retry from the prior cursor.
+default and rechecks the full remotely retained 73-hour index on every pass.
+Missing local capture files are restored after remote and decompressed hashes
+verify; conflicting same-name files are left untouched and reported as errors.
+Only after a full index scan does the worker advance its last-successful-scan
+cursor. A failed pass retries at the next poll. This recovers missing capture
+files while the relay retains them; it cannot reconstruct exchange events that
+were absent from both local and VPS captures, which remain explicit gaps and
+make affected exports/replays inadmissible.
 
 `deploy/td-market-data-sync.service` is a systemd template for that local
 worker. It is not installed automatically. Before enabling it, create the
@@ -359,7 +364,10 @@ worker. It is not installed automatically. Before enabling it, create the
 requirements under `/opt/td-market-data-relay/.venv`, and create a mode-0600
 `/etc/td-market-data-relay/sync.env` containing the relay HTTPS URL and API key.
 The unit writes only to its dedicated `/var/lib/td-market-data-recovered`
-state directory.
+state directory. To write directly into an existing local capture tree, update
+the unit's `--output` and `ReadWritePaths` to that tree, preserving its
+`stream/symbol` layout and ownership; the default remains an isolated recovery
+directory.
 
 ## Local development
 
