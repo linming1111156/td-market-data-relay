@@ -6,10 +6,14 @@ from pathlib import Path
 
 import zstandard
 
-from build_usdm_rl_dataset import decode_archive
+from build_usdm_rl_dataset import decode_archive, reject_system_temp
 
 
 class UsdmRlDatasetInputTests(unittest.TestCase):
+    def test_large_build_outputs_cannot_target_system_temp(self):
+        with self.assertRaisesRegex(SystemExit, "system temporary storage"):
+            reject_system_temp(Path("/tmp/large-dataset"), "Dataset output")
+
     def test_archive_decoder_checks_compressed_raw_hashes_and_recovery_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -1,0 +1,59 @@
+{
+  "schema": "td_market_data_usdm_rl_feature_ledger_protocol",
+  "version": 1,
+  "market": "USD_M",
+  "symbol": "BTCUSDT",
+  "time": {
+    "decision_grid": "UTC minute boundaries",
+    "policy_decision_every_minutes": 15,
+    "feature_availability": "only source rows with available_at_ns <= decision_at_ns",
+    "mark_endpoint": "latest Mark observation with event_time_ns < endpoint and available_at_ns <= decision_at_ns; maximum staleness 5000 ms",
+    "return": "natural_log(current_mark / lagged_mark)",
+    "realized_volatility": "sqrt(sum of squared one-minute natural-log returns); not annualized",
+    "signed_aggtrade_volume": "BUY volume minus SELL volume; buyer_is_maker=true is SELL",
+    "volume_imbalance": "signed base volume / total base volume over the half-open event-time window",
+    "execution_window": "next UTC minute [decision_at_ns, decision_at_ns + 60000000000)",
+    "funding_cashflow_time": "settlement timestamp; source availability remains separately recorded"
+  },
+  "features": [
+    {"name": "mark_log_return_1m", "type": "float64"},
+    {"name": "mark_log_return_5m", "type": "float64"},
+    {"name": "mark_log_return_15m", "type": "float64"},
+    {"name": "mark_realized_volatility_15m", "type": "float64"},
+    {"name": "mark_realized_volatility_60m", "type": "float64"},
+    {"name": "aggtrade_signed_volume_imbalance_1m", "type": "float64"},
+    {"name": "aggtrade_signed_volume_imbalance_5m", "type": "float64"}
+  ],
+  "policy_state": {
+    "append": "current_signed_position_btc / 0.001",
+    "action_targets_btc": [-0.001, 0.0, 0.001]
+  },
+  "execution": {
+    "fill_price_reference": "next-minute aggregate-trade VWAP",
+    "adverse_slippage_applied_to_fill_price": true,
+    "participation_cap_fraction_of_next_minute_base_volume": 0.01,
+    "lot_size_btc": 0.001,
+    "minimum_quantity_btc": 0.001,
+    "minimum_notional_usdt": 50.0,
+    "entry_notional_cap_usdt": 100.0,
+    "maximum_absolute_position_btc": 0.001,
+    "risk_reducing_close_exempt_from_entry_notional_cap": true,
+    "fee_is_taker_and_applied_once_to_executed_notional": true
+  },
+  "accounting": {
+    "quote_currency": "USDT",
+    "initial_equity_usdt": 10000.0,
+    "initial_margin_fraction": 0.10,
+    "maintenance_margin_fraction": 0.05,
+    "liquidation_surcharge_bps": 25,
+    "funding_cashflow_usdt": "-signed_position_btc * settlement_mark_price * finalized_funding_rate",
+    "gross_price_pnl_usdt": "signed_position_btc * (mark_now - mark_previous)",
+    "net_pnl_usdt": "gross_price_pnl + funding_cashflow - taker_fees - adverse_slippage_cost"
+  },
+  "cost_scenarios": {
+    "taker_fee_bps": [5, 10, 15, 20],
+    "adverse_slippage_bps": [1, 5, 10],
+    "reference": {"taker_fee_bps": 10, "adverse_slippage_bps": 5}
+  },
+  "missing_data": "mark/feature gaps remain explicitly unready; never interpolate or fill with zero"
+}

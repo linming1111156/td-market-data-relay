@@ -135,6 +135,50 @@ The root verifier checks child manifests against the root stream/source list.
 Published Dataset files and directories are read-only and the final directory
 is atomically created without replacement.
 
+## Feature and ledger handoff v1
+
+`offline-usdm-feature-ledger-v1.json` freezes the seven market factors, the
+15-minute policy cadence, execution windows, risk assumptions and the 12-cell
+fee/slippage matrix. `build_usdm_rl_features.py` consumes only a verified fixed
+Dataset and writes two separate, read-only minute tables:
+
+- `features.jsonl` has the causal seven-factor vector, readiness marker, and
+  policy decision marker. Position normalization is appended by the simulator
+  from its current position; it is never learned as a static market feature.
+- `ledger_inputs.jsonl` has the Mark valuation price, the following minute's
+  aggregate-trade VWAP and participation volumes, plus finalized settlement
+  records assigned to their settlement minute. These future execution fields
+  are simulator inputs and must never be exposed to the policy.
+
+The copied cost/risk values are research assumptions from the previously run
+Gateway offline comparison, not current exchange filters or a production risk
+policy. This market-data level cannot reconstruct spread, queue position or
+intraminute impact; the fixed slippage matrix remains an explicit sensitivity
+assumption. The later simulator phase must apply Funding, fees, slippage,
+position limits, turnover and margin/liquidation rules as auditable cash/equity
+ledger entries and report their components separately.
+
+All UTC minutes in the requested window are retained. Warm-up or zero-volume
+windows remain explicitly `feature_ready: false` with a null vector. There is no
+interpolation, clipping, synthetic trade volume or feature zero-fill. The
+builder keeps only rolling Mark/trade windows in memory and stages outputs next
+to the selected data-volume path; system `/tmp` is rejected.
+
+```sh
+uv run python build_usdm_rl_features.py \
+  --dataset /data/td-market-data/datasets/usdm-2026-11-01 \
+  --output /data/td-market-data/features/usdm-2026-11-01
+
+uv run python verify_usdm_rl_features.py \
+  --features /data/td-market-data/features/usdm-2026-11-01 \
+  --dataset /data/td-market-data/datasets/usdm-2026-11-01
+```
+
+The verifier checks source-Dataset identity, protocol and output hashes, exact
+minute coverage, feature ranges, and execution/Funding event bucketing. Phase 4
+will consume this handoff; it will keep the execution and reward ledger
+separate from policy inputs.
+
 ## Training and comparison handoff
 
 The Dataset manifest hash is the immutable input identity for training and

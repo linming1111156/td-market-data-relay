@@ -61,6 +61,12 @@ def fmt_ns(value: int) -> str:
         timespec="milliseconds").replace("+00:00", "Z")
 
 
+def reject_system_temp(path: Path, label: str) -> None:
+    resolved = path.resolve()
+    if any(resolved == root or root in resolved.parents for root in (Path("/tmp"), Path("/var/tmp"))):
+        raise SystemExit(f"{label} must be on the selected data volume, not system temporary storage")
+
+
 def publish_directory(staging: Path, output: Path) -> None:
     libc = __import__("ctypes").CDLL(None, use_errno=True)
     rename_noreplace = getattr(libc, "renameat2", None)
@@ -234,8 +240,10 @@ def main() -> None:
         raise SystemExit("duplicate capture paths are not allowed")
 
     output = args.output.resolve()
+    reject_system_temp(output, "Dataset output")
     output.parent.mkdir(parents=True, exist_ok=True)
     source_output = (args.source_output or output.with_name(output.name + "-sources")).resolve()
+    reject_system_temp(source_output, "decoded source output")
     if (source_output == output or source_output.is_symlink() or
             (source_output.exists() and not source_output.is_dir())
             or source_output == script_dir or script_dir in source_output.parents):
