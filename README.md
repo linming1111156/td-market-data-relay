@@ -451,11 +451,12 @@ worker. It is not installed automatically. Before enabling it, create the
 `td-market-data-sync` OS user, install this repository and its Python
 requirements under `/opt/td-market-data-relay/.venv`, and create a mode-0600
 `/etc/td-market-data-relay/sync.env` containing the relay HTTPS URL and API key.
-On a local recovery host with Python 3.13 and systemd, run
+On a local recovery host with Python 3.13, `uv`, and systemd, run
 `sudo scripts/install_local_sync_service.sh` from this repository to perform
 that setup. The installer prompts for the existing VPS relay API key without
-echoing it, saves it only to the mode-0600 environment file, and uses a
-repository-local temporary directory while installing Python requirements.
+echoing it, saves it only to the mode-0600 environment file, and uses `uv` with
+a repository-local temporary directory to create the virtual environment and
+install Python requirements.
 The unit writes only to its dedicated `/var/lib/td-market-data-recovered`
 state directory. To write directly into an existing local capture tree, update
 the unit's `--output` and `ReadWritePaths` to that tree, preserving its

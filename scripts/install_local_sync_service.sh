@@ -12,6 +12,7 @@ ENV_DIR=/etc/td-market-data-relay
 ENV_FILE="$ENV_DIR/sync.env"
 UNIT_NAME=td-market-data-sync.service
 PYTHON_BIN=${PYTHON_BIN:-python3.13}
+UV_BIN=${UV_BIN:-uv}
 
 for required in collector.py sync.py requirements.txt deploy/td-market-data-sync.service; do
   if [[ ! -f "$SOURCE_ROOT/$required" ]]; then
@@ -20,7 +21,11 @@ for required in collector.py sync.py requirements.txt deploy/td-market-data-sync
   fi
 done
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-  echo "$PYTHON_BIN is required; install Python 3.13 and its venv support first" >&2
+  echo "$PYTHON_BIN is required; install Python 3.13 first" >&2
+  exit 1
+fi
+if ! command -v "$UV_BIN" >/dev/null 2>&1; then
+  echo "$UV_BIN is required; install uv first or set UV_BIN to its absolute path" >&2
   exit 1
 fi
 if ! command -v systemctl >/dev/null 2>&1; then
@@ -103,10 +108,15 @@ if [[ $(stat -c '%a' "$ENV_FILE") != 600 ]]; then
 fi
 chown root:root "$ENV_FILE"
 
+if [[ -L "$INSTALL_ROOT/.venv" ]]; then
+  echo "$INSTALL_ROOT/.venv must not be a symlink" >&2
+  exit 1
+fi
 install -d -o root -g root -m 0755 "$INSTALL_ROOT/.tmp"
-"$PYTHON_BIN" -m venv "$INSTALL_ROOT/.venv"
-TMPDIR="$INSTALL_ROOT/.tmp" "$INSTALL_ROOT/.venv/bin/python" -m pip \
-  install --no-cache-dir --disable-pip-version-check -r "$INSTALL_ROOT/requirements.txt"
+TMPDIR="$INSTALL_ROOT/.tmp" "$UV_BIN" venv --clear --python "$PYTHON_BIN" "$INSTALL_ROOT/.venv"
+TMPDIR="$INSTALL_ROOT/.tmp" UV_CACHE_DIR="$INSTALL_ROOT/.uv-cache" \
+  "$UV_BIN" pip install --no-cache --python "$INSTALL_ROOT/.venv/bin/python" \
+  -r "$INSTALL_ROOT/requirements.txt"
 rm -rf "$INSTALL_ROOT/.tmp"
 install -m 0644 "$SOURCE_ROOT/deploy/td-market-data-sync.service" \
   "/etc/systemd/system/$UNIT_NAME"
