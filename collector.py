@@ -556,7 +556,14 @@ async def receive_observation_session(
                                   accepted_for_sequence=False)
                     capture.gap(f"{kind}_id_discontinuity", expected_trade_id=previous + 1,
                                 received_trade_id=trade_id, session_id=session_id)
-                    raise SequenceGap(f"{market_name} ID is discontinuous")
+                    # Keep capturing after a sequence gap. Reconnecting while
+                    # retaining the old ID makes every subsequent session
+                    # fail against the same stale expected_trade_id forever.
+                    # Rebase only on a forward ID; an old/duplicate frame must
+                    # not move the high-water mark backwards.
+                    if trade_id > previous:
+                        last_trade_id[0] = trade_id
+                    continue
                 last_trade_id[0] = trade_id
                 capture.frame(received_ns, monotonic_ns, raw, session_id=session_id,
                               event_time_ms=update.get("E"), trade_time_ms=update.get("T"),
