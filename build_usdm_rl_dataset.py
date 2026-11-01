@@ -97,6 +97,10 @@ def seal_directory(root: Path) -> None:
             os.close(fd)
 
 
+def stable_source_paths(source_output: Path, stream: str, staged_paths: list[Path]) -> list[Path]:
+    return [source_output / stream / path.name for path in staged_paths]
+
+
 def decode_archive(archive: Path, destination: Path) -> dict[str, Any]:
     try:
         import zstandard
@@ -292,7 +296,7 @@ def main() -> None:
         for stream in STREAMS:
             for row in sources[stream]:
                 row["raw_path"] = str((source_output / stream / Path(row["raw_path"]).name).resolve())
-            raw_paths[stream] = [source_output / path.name for path in raw_paths[stream]]
+            raw_paths[stream] = stable_source_paths(source_output, stream, raw_paths[stream])
 
         def window_args() -> list[str]:
             return ["--symbol", args.symbol.upper(), "--start", fmt_ns(start_ns), "--end", fmt_ns(end_ns)]
@@ -350,8 +354,11 @@ def main() -> None:
                     "sources": source_inventory,
                     "source_capture_set_sha256": hashlib.sha256(canonical(source_hashes)).hexdigest(),
                     "datasets": datasets,
-                    "availability_policy": {"local": "available_at_ns=max(received_at_ns,exchange_event_time_ns)",
-                                            "vps_recovered": "available_at_ns=max(received_at_ns,recovered_at_unix_ns,exchange_event_time_ns)"},
+                    "availability_policy": {
+                        "aggregate_trades": "max(received_at_ns,recovered_at_unix_ns_if_present,exchange_event_time_ns,trade_time_ns,previous_available_at_ns)",
+                        "aggregate_trade_overlap": "deduplicate_only_when_raw_frame_sha256_matches; bounded_to_100000_trade_ids",
+                        "other_streams": "see_stream_dataset_or_evidence_policy",
+                    },
                     "gap_policy": "reject; no interpolation and no silent window shortening",
                     "builder_sha256": sha256_file(Path(__file__).resolve()),
                     "git_revision": revision}

@@ -6,10 +6,16 @@ from pathlib import Path
 
 import zstandard
 
-from build_usdm_rl_dataset import decode_archive, reject_system_temp
+from build_usdm_rl_dataset import decode_archive, reject_system_temp, stable_source_paths
 
 
 class UsdmRlDatasetInputTests(unittest.TestCase):
+    def test_child_export_source_paths_keep_the_stream_directory(self):
+        root = Path("/data/research/sources")
+        staged = Path("/data/staging/usdm-aggtrades/CAPTURE.jsonl")
+        self.assertEqual(stable_source_paths(root, "usdm-aggtrades", [staged]),
+                         [root / "usdm-aggtrades" / "CAPTURE.jsonl"])
+
     def test_large_build_outputs_cannot_target_system_temp(self):
         with self.assertRaisesRegex(SystemExit, "system temporary storage"):
             reject_system_temp(Path("/tmp/large-dataset"), "Dataset output")

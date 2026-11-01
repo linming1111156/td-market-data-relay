@@ -17,8 +17,8 @@ def line(record):
     return json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
 
 
-def make_capture(path, ids=(100, 101, 102)):
-    started_ns = BASE_MS * 1_000_000 - 2_000_000_000
+def make_capture(path, ids=(100, 101, 102), start_offset_ms=0):
+    started_ns = BASE_MS * 1_000_000 - 2_000_000_000 + start_offset_ms * 1_000_000
     records = [{"schema": "td_public_market_capture_record", "version": 1,
                 "record_type": "capture_started", "recorded_at_unix_ns": started_ns,
                 "recorded_at_monotonic_ns": 1_000_000_000,
@@ -30,29 +30,32 @@ def make_capture(path, ids=(100, 101, 102)):
                {"schema": "td_public_market_capture_record", "version": 1,
                 "record_type": "session_connected", "recorded_at_unix_ns": started_ns + 1_000_000,
                 "session_id": "session-1", "url": URL}]
-    for index, (trade_id, trade_ms) in enumerate(zip(ids, (BASE_MS, BASE_MS + 1_500, BASE_MS + 3_000), strict=True)):
+    for trade_id in ids:
+        trade_ms = BASE_MS + (trade_id - 100) * 1_500
         frame = {"e": "aggTrade", "E": trade_ms, "s": SYMBOL, "a": trade_id,
                  "p": "50000.25", "q": "0.003", "f": trade_id * 10,
-                 "l": trade_id * 10, "T": trade_ms, "m": index % 2 == 0, "M": True}
+                 "l": trade_id * 10, "T": trade_ms, "m": trade_id % 2 == 0, "M": True}
         raw_frame = json.dumps(frame, separators=(",", ":"))
         received_ns = trade_ms * 1_000_000 + 100_000_000
         records.append({"schema": "td_public_market_capture_record", "version": 1,
                         "record_type": "market_frame", "session_id": "session-1",
                         "received_at_unix_ns": received_ns,
-                        "receive_monotonic_ns": 2_000_000_000 + index * 1_000_000_000,
+                        "receive_monotonic_ns": 2_000_000_000 + (trade_id - ids[0]) * 1_000_000_000,
                         "event_time_ms": trade_ms, "trade_time_ms": trade_ms,
                         "trade_id": trade_id, "first_trade_id": trade_id * 10,
                         "last_trade_id": trade_id * 10, "buyer_is_maker": frame["m"],
                         "accepted_for_sequence": True, "raw_frame": raw_frame,
                         "raw_frame_sha256": hashlib.sha256(raw_frame.encode()).hexdigest()})
+    disconnect_ns = max(BASE_MS * 1_000_000 + 4_000_000_000,
+                        (BASE_MS + (max(ids) - 100) * 1_500 + 1_000) * 1_000_000)
     records.append({"schema": "td_public_market_capture_record", "version": 1,
-                    "record_type": "session_disconnected", "recorded_at_unix_ns": BASE_MS * 1_000_000 + 4_000_000_000,
+                    "record_type": "session_disconnected", "recorded_at_unix_ns": disconnect_ns,
                     "session_id": "session-1", "reason": "hourly_rotation"})
     prior_bytes = sum(len(line(record)) for record in records)
     records.append({"schema": "td_public_market_capture_record", "version": 1,
-                    "record_type": "capture_stopped", "recorded_at_unix_ns": BASE_MS * 1_000_000 + 4_100_000_000,
+                    "record_type": "capture_stopped", "recorded_at_unix_ns": disconnect_ns + 100_000_000,
                     "recorded_at_monotonic_ns": 6_000_000_000, "reason": "duration_elapsed",
-                    "observation_count": 3, "gap_count": 0, "disconnect_count": 0,
+                    "observation_count": len(ids), "gap_count": 0, "disconnect_count": 0,
                     "bytes_before_stop_record": prior_bytes})
     path.write_bytes(b"".join(line(record) for record in records))
 
@@ -83,6 +86,38 @@ class UsdmAggregateTradesDatasetTests(unittest.TestCase):
                         (BASE_MS + 1_000) * 1_000_000,
                         (BASE_MS + 2_000) * 1_000_000)
             self.assertFalse(output.exists())
+
+    def test_identical_overlapping_capture_is_deduplicated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, second, output = root / "first.jsonl", root / "second.jsonl", root / "dataset"
+            make_capture(first, ids=(100, 101, 102))
+            make_capture(second, ids=(101, 102, 103, 104), start_offset_ms=100)
+            manifest = publish([first, second], output, SYMBOL,
+                               (BASE_MS + 1_000) * 1_000_000,
+                               (BASE_MS + 5_000) * 1_000_000)
+            rows = [json.loads(row) for row in (output / "events.jsonl").read_text().splitlines()]
+            self.assertEqual([row["aggregate_trade_id"] for row in rows], [101, 102, 103])
+            self.assertEqual(manifest["deduplicated_overlap_count"], 2)
+            self.assertEqual(verify_dataset(output, [first, second])["event_count"], 3)
+
+    def test_small_source_clock_skew_preserves_point_in_time_availability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture, output = root / "capture.jsonl", root / "dataset"
+            make_capture(capture)
+            records = [json.loads(raw) for raw in capture.read_text().splitlines()]
+            for row in records:
+                if row["record_type"] == "market_frame":
+                    row["received_at_unix_ns"] -= 500_000_000
+            capture.write_bytes(b"".join(line(record) for record in records))
+            publish([capture], output, SYMBOL,
+                    (BASE_MS + 1_000) * 1_000_000,
+                    (BASE_MS + 2_000) * 1_000_000)
+            event = json.loads((output / "events.jsonl").read_text().splitlines()[0])
+            self.assertLess(event["received_at_ns"], event["trade_time_ns"])
+            self.assertEqual(event["available_at_ns"], event["exchange_event_time_ns"])
+            verify_dataset(output, [capture])
 
     def test_independent_verifier_rejects_event_tampering(self):
         with tempfile.TemporaryDirectory() as directory:

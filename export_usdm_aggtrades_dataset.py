@@ -23,6 +23,7 @@ MAX_CAPTURE_BYTES = 256 * 1024 * 1024
 MAX_DATASET_BYTES = 512 * 1024 * 1024
 MAX_EVENTS = 2_000_000
 MAX_LINE_BYTES = 2 * 1024 * 1024
+MAX_OVERLAP_IDS = 100_000
 
 
 class AggregateTradesRejected(ValueError):
@@ -104,6 +105,9 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
     previous_trade_ms: int | None = None
     previous_received_ns: int | None = None
     previous_mono_ns: int | None = None
+    previous_available_ns: int | None = None
+    previous_inside_capture_id: str | None = None
+    recent_frame_hashes: dict[int, str] = {}
     first_inside: dict[str, Any] | None = None
     last_inside: dict[str, Any] | None = None
     pre_window_evidence: dict[str, Any] | None = None
@@ -116,6 +120,7 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
     chain_start_ns: int | None = None
     chain_stop_ns: int | None = None
     last_capture_started_ns: int | None = None
+    deduplicated_overlap_count = 0
 
     with (stage / "events.jsonl").open("xb", buffering=0) as target:
         for capture in captures:
@@ -130,6 +135,11 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
             connect_ns: int | None = None
             disconnect_ns: int | None = None
             capture_max_gap_ms = 0
+            capture_previous_received_ns: int | None = None
+            capture_previous_mono_ns: int | None = None
+            capture_previous_event_ms: int | None = None
+            capture_previous_trade_ms: int | None = None
+            capture_previous_id: int | None = None
             frames = 0
             bytes_seen = 0
             with capture.open("rb") as source:
@@ -163,9 +173,7 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
                             raise AggregateTradesRejected(f"capture code hash invalid: {capture}")
                         if last_capture_started_ns is not None and started_ns <= last_capture_started_ns:
                             raise AggregateTradesRejected("capture chain is duplicated or out of order")
-                        if chain_stop_ns is not None and started_ns < chain_stop_ns:
-                            raise AggregateTradesRejected("capture files overlap in their lifecycle")
-                        if chain_start_ns is None:
+                        if chain_start_ns is None or started_ns < chain_start_ns:
                             chain_start_ns = started_ns
                         last_capture_started_ns = started_ns
                     elif kind == "session_connected":
@@ -208,19 +216,19 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
                             raise AggregateTradesRejected(f"{capture}:{line_number}: parsed fields differ from raw frame")
                         if receive_ns < (connect_ns or 0) or event_ms * 1_000_000 > receive_ns + 2_000_000_000:
                             raise AggregateTradesRejected(f"{capture}:{line_number}: invalid event/receive ordering")
-                        if previous_id is not None and trade_id != previous_id + 1:
-                            raise AggregateTradesRejected(f"{capture}:{line_number}: aggregate trade ID gap")
-                        if previous_event_ms is not None and event_ms < previous_event_ms:
+                        if capture_previous_id is not None and trade_id <= capture_previous_id:
+                            raise AggregateTradesRejected(f"{capture}:{line_number}: IDs regress within capture")
+                        if capture_previous_event_ms is not None and event_ms < capture_previous_event_ms:
                             raise AggregateTradesRejected(f"{capture}:{line_number}: exchange event time regressed")
-                        if previous_trade_ms is not None and trade_ms < previous_trade_ms:
+                        if capture_previous_trade_ms is not None and trade_ms < capture_previous_trade_ms:
                             raise AggregateTradesRejected(f"{capture}:{line_number}: trade time regressed")
-                        if previous_received_ns is not None:
-                            if receive_ns <= previous_received_ns or receive_mono <= previous_mono_ns:
+                        if capture_previous_received_ns is not None:
+                            if receive_ns <= capture_previous_received_ns or receive_mono <= capture_previous_mono_ns:
                                 raise AggregateTradesRejected(f"{capture}:{line_number}: receive clock regressed")
-                            wall_delta = receive_ns - previous_received_ns
-                            mono_delta = receive_mono - previous_mono_ns
+                            wall_delta = receive_ns - capture_previous_received_ns
+                            mono_delta = receive_mono - capture_previous_mono_ns
                             max_receive_gap_ms = max(max_receive_gap_ms, wall_delta // 1_000_000)
-                            if (mono_delta > min(capture_max_gap_ms, previous_max_gap_ms) * 1_000_000
+                            if (mono_delta > capture_max_gap_ms * 1_000_000
                                     or abs(wall_delta - mono_delta) > 2_000_000_000):
                                 raise AggregateTradesRejected(f"{capture}:{line_number}: receive gap/clock discontinuity")
                         price = decimal(frame.get("p"), "price", line_number)
@@ -230,12 +238,34 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
                         else:
                             aggressor = "BUY"
                         event_ns = trade_ms * 1_000_000
+                        frame_hash = row["raw_frame_sha256"]
+                        if previous_id is not None and trade_id <= previous_id:
+                            known_hash = recent_frame_hashes.get(trade_id)
+                            if known_hash is None:
+                                raise AggregateTradesRejected(f"{capture}:{line_number}: overlap exceeds the bounded deduplication window")
+                            if known_hash != frame_hash:
+                                raise AggregateTradesRejected(f"{capture}:{line_number}: conflicting duplicate aggregate trade ID")
+                            deduplicated_overlap_count += 1
+                            capture_previous_id = trade_id
+                            capture_previous_event_ms = event_ms
+                            capture_previous_trade_ms = trade_ms
+                            capture_previous_received_ns = receive_ns
+                            capture_previous_mono_ns = receive_mono
+                            previous_max_gap_ms = capture_max_gap_ms
+                            continue
+                        if previous_id is not None and trade_id != previous_id + 1:
+                            raise AggregateTradesRejected(f"{capture}:{line_number}: aggregate trade ID gap")
+                        if previous_event_ms is not None and event_ms < previous_event_ms:
+                            raise AggregateTradesRejected(f"{capture}:{line_number}: exchange event time regressed")
+                        if previous_trade_ms is not None and trade_ms < previous_trade_ms:
+                            raise AggregateTradesRejected(f"{capture}:{line_number}: trade time regressed")
                         normalized = {"record_type": "aggregate_trade", "symbol": symbol,
                                       "capture_id": capture_id,
                                       "aggregate_trade_id": trade_id, "first_trade_id": first_trade_id,
                                       "last_trade_id": last_trade_id, "exchange_event_time_ns": event_ms * 1_000_000,
                                       "trade_time_ns": event_ns, "received_at_ns": receive_ns,
-                                      "available_at_ns": max(receive_ns, event_ms * 1_000_000, recovered_at_ns),
+                                      "available_at_ns": max(receive_ns, event_ms * 1_000_000, event_ns, recovered_at_ns,
+                                                              previous_available_ns or 0),
                                       "received_monotonic_ns": receive_mono, "price": price,
                                       "quantity": quantity, "buyer_is_maker": frame["m"],
                                       "aggressor_side": aggressor,
@@ -251,11 +281,12 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
                                 "aggregate_trade_id": trade_id, "trade_time_ns": event_ns,
                                 "received_at_ns": receive_ns, "raw_frame_sha256": row["raw_frame_sha256"]}
                         else:
-                            if previous_inside_receive_ns is not None:
+                            if previous_inside_receive_ns is not None and previous_inside_capture_id == capture_id:
                                 max_dataset_receive_gap_ms = max(
                                     max_dataset_receive_gap_ms,
                                     (receive_ns - previous_inside_receive_ns) // 1_000_000)
                             previous_inside_receive_ns = receive_ns
+                            previous_inside_capture_id = capture_id
                             encoded = canonical(normalized) + b"\n"
                             event_bytes += len(encoded)
                             if event_bytes > MAX_DATASET_BYTES:
@@ -266,15 +297,27 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
                             first_inside = first_inside or normalized
                             last_inside = normalized
                             event_count += 1
+                            previous_available_ns = normalized["available_at_ns"]
+                        recent_frame_hashes[trade_id] = frame_hash
+                        cutoff = trade_id - MAX_OVERLAP_IDS
+                        if len(recent_frame_hashes) > MAX_OVERLAP_IDS * 2:
+                            recent_frame_hashes = {key: value for key, value in recent_frame_hashes.items()
+                                                   if key >= cutoff}
                         previous_id, previous_event_ms, previous_trade_ms = trade_id, event_ms, trade_ms
                         previous_received_ns, previous_mono_ns = receive_ns, receive_mono
+                        capture_previous_id = trade_id
+                        capture_previous_event_ms = event_ms
+                        capture_previous_trade_ms = trade_ms
+                        capture_previous_received_ns = receive_ns
+                        capture_previous_mono_ns = receive_mono
                         previous_max_gap_ms = capture_max_gap_ms
                     elif kind == "session_disconnected":
                         if (not connected or disconnected or row.get("session_id") != session
                                 or row.get("reason") not in {"hourly_rotation", "local_shutdown"}):
                             raise AggregateTradesRejected(f"{capture}:{line_number}: unclean session stop")
                         disconnect_ns = uint(row.get("recorded_at_unix_ns"), "disconnect time", line_number)
-                        if previous_received_ns is not None and disconnect_ns < previous_received_ns:
+                        if (capture_previous_received_ns is not None
+                                and disconnect_ns < capture_previous_received_ns):
                             raise AggregateTradesRejected(f"{capture}:{line_number}: disconnect predates last frame")
                         disconnected = True
                     elif kind == "capture_stopped":
@@ -285,11 +328,8 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
                                 or row.get("disconnect_count") != 0 or row.get("bytes_before_stop_record") != before_record
                                 or stopped_ns < (disconnect_ns or 0)):
                             raise AggregateTradesRejected(f"{capture}:{line_number}: capture footer mismatch")
-                        if chain_stop_ns is not None and started_ns - chain_stop_ns > min(
-                            capture_max_gap_ms, previous_max_gap_ms
-                        ) * 1_000_000:
-                            raise AggregateTradesRejected("receive gap across capture rotation")
-                        chain_stop_ns = stopped_ns
+                        if chain_stop_ns is None or stopped_ns > chain_stop_ns:
+                            chain_stop_ns = stopped_ns
                     elif kind in {"gap_detected", "clock_discontinuity"}:
                         raise AggregateTradesRejected(f"{capture}:{line_number}: capture contains {kind}")
                     else:
@@ -328,6 +368,8 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
                 "last_receive_time_ns": last_inside["received_at_ns"],
                 "max_receive_gap_ms": max_dataset_receive_gap_ms,
                 "max_capture_chain_receive_gap_ms": max_receive_gap_ms,
+                "deduplicated_overlap_count": deduplicated_overlap_count,
+                "overlap_policy": "identical_raw_frame_sha256_required_bounded_100000_ids",
                 "boundary_coverage": {"pre_window_trade": pre_window_evidence,
                                       "post_window_trade": post_window_evidence},
                 "events_file": "events.jsonl", "events_sha256": events_hash.hexdigest(),

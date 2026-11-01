@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import hashlib
 import json
 import math
@@ -91,18 +92,18 @@ def manifest_child(dataset: Path, name: str) -> str:
 
 
 def mark_price_at(minute_marks: dict[int, tuple[int, int, float]], endpoint_ns: int,
-                  decision_ns: int) -> float | None:
+                  decision_ns: int, minute_keys: list[int] | None = None) -> float | None:
     key = (endpoint_ns - 1) // MINUTE_NS
-    while key >= 0:
-        item = minute_marks.get(key)
-        if item is not None:
-            event_ns, available_ns, price = item
-            if event_ns < endpoint_ns and available_ns <= decision_ns:
-                if endpoint_ns - event_ns <= MAX_MARK_STALENESS_NS:
-                    return price
-            if endpoint_ns - event_ns > MAX_MARK_STALENESS_NS:
-                return None
-        key -= 1
+    keys = minute_keys if minute_keys is not None else sorted(minute_marks)
+    index = bisect.bisect_right(keys, key) - 1
+    while index >= 0:
+        item = minute_marks[keys[index]]
+        event_ns, available_ns, price = item
+        if event_ns < endpoint_ns and available_ns <= decision_ns:
+            if endpoint_ns - event_ns <= MAX_MARK_STALENESS_NS:
+                return price
+            return None
+        index -= 1
     return None
 
 
@@ -244,9 +245,12 @@ def build(dataset: Path, protocol_path: Path, output: Path) -> dict[str, Any]:
                     del minute_trade_volumes[minute]
 
                 prices: dict[int, float | None] = {}
+                available_mark_minutes = sorted(minute_marks)
                 for lag in range(0, 61):
                     endpoint = decision_ns - lag * MINUTE_NS
-                    prices[lag] = mark_price_at(minute_marks, endpoint, decision_ns) if endpoint > 0 else None
+                    prices[lag] = (mark_price_at(minute_marks, endpoint, decision_ns,
+                                                 available_mark_minutes)
+                                   if endpoint > 0 else None)
                 ready = all(prices[lag] is not None for lag in range(61))
                 # This field is also needed by execution accounting when the market vector is unready.
                 current_price = prices[0]
