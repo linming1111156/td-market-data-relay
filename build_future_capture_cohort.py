@@ -122,8 +122,8 @@ def write_decoded_capture(compressed: Path, sidecar: Path, destination: Path,
     stopped_ns = last.get("recorded_at_unix_ns")
     if not isinstance(started_ns, int) or not isinstance(stopped_ns, int):
         raise RuntimeError(f"capture lifecycle timestamps are invalid: {compressed}")
-    if started_ns > start_ns or stopped_ns >= end_ns:
-        raise RuntimeError(f"capture does not fully bracket requested window: {compressed}")
+    if started_ns > start_ns or stopped_ns < start_ns:
+        raise RuntimeError(f"capture does not cover the requested window start: {compressed}")
     fatal = {kind: record_types.get(kind, 0) for kind in
              ("gap_detected", "clock_discontinuity", "funding_api_error")
              if record_types.get(kind, 0)}
@@ -200,8 +200,8 @@ def main() -> None:
         raise SystemExit("exactly one compressed capture is required for each of the eight streams")
 
     source_output = (args.source_output or args.output.with_name(args.output.name + "-sources")).resolve()
-    if source_output.exists():
-        raise SystemExit(f"source output already exists: {source_output}")
+    if source_output.is_symlink() or (source_output.exists() and not source_output.is_dir()):
+        raise SystemExit(f"source output must be a regular directory: {source_output}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     source_output.parent.mkdir(parents=True, exist_ok=True)
     source_stage = Path(tempfile.mkdtemp(prefix=f".{source_output.name}.staging-",
@@ -231,7 +231,14 @@ def main() -> None:
 
         # Source paths are embedded in exporter manifests. Publish them at their
         # stable final path before running exporters so those references remain valid.
-        publish_directory(source_stage, source_output)
+        if source_output.exists():
+            for stream in STREAMS:
+                prior = source_output / stream / raw_paths[stream].name
+                if not prior.is_file() or prior.is_symlink() or sha256_file(prior) != capture_records[stream]["raw_sha256"]:
+                    raise RuntimeError(f"existing decoded source differs from archive: {prior}")
+            shutil.rmtree(source_stage)
+        else:
+            publish_directory(source_stage, source_output)
         for stream, record in capture_records.items():
             record["raw_path"] = str((source_output / stream / Path(record["raw_path"]).name).resolve())
         raw_paths = {stream: source_output / stream / path.name for stream, path in raw_paths.items()}
