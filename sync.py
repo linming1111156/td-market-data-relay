@@ -22,6 +22,7 @@ SUPPORTED_STREAMS = COLLECTOR_SUPPORTED_STREAMS
 RELAY_RETENTION_NS = 73 * 3600 * 1_000_000_000
 LOSS_SCHEMA = "td_market_data_relay_early_discard_v1"
 MAX_LOSS_LEDGER_BYTES = 16 * 1024 * 1024
+MAX_CAPTURE_LINE_BYTES = 2 * 1024 * 1024
 
 
 def continuous_scan_start(now_ns: int, since_ns: int) -> int:
@@ -40,6 +41,25 @@ def digest(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def capture_is_closed(path: Path) -> bool:
+    """Do not publish a still-growing capture as a permanent local copy."""
+    last_record = None
+    with path.open("rb") as stream:
+        for line_number, raw in enumerate(stream, 1):
+            if len(raw) > MAX_CAPTURE_LINE_BYTES:
+                raise RuntimeError(f"capture line {line_number} exceeds size bound: {path}")
+            if not raw.endswith(b"\n"):
+                return False
+            try:
+                record = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise RuntimeError(f"capture line {line_number} is invalid JSON: {path}") from error
+            if not isinstance(record, dict):
+                raise RuntimeError(f"capture line {line_number} is not an object: {path}")
+            last_record = record
+    return isinstance(last_record, dict) and last_record.get("record_type") == "capture_stopped"
 
 
 def remove_abandoned_temp(path: Path) -> None:
@@ -207,7 +227,11 @@ def main() -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
                 if digest(target) == entry["raw_sha256"]:
-                    skipped += 1
+                    if capture_is_closed(target):
+                        skipped += 1
+                    else:
+                        skipped += 1
+                        print(f"deferred incomplete remote capture: {stream_name}/{symbol}/{filename}", flush=True)
                     continue
                 raise RuntimeError(f"local capture differs from relay copy; left untouched: {target}")
             temp = target.with_name(target.name + f".download-{os.getpid()}")
@@ -244,12 +268,20 @@ def main() -> None:
                             os.fsync(output.fileno())
                         if digest(decoded) != entry["raw_sha256"]:
                             raise RuntimeError(f"decompressed capture hash mismatch for {entry['id']}")
+                        if not capture_is_closed(decoded):
+                            skipped += 1
+                            print(f"deferred incomplete remote capture: {stream_name}/{symbol}/{filename}", flush=True)
+                            continue
                         publish_without_overwrite(decoded, target)
                     finally:
                         decoded.unlink(missing_ok=True)
                 else:
                     if digest(temp) != entry["raw_sha256"]:
                         raise RuntimeError(f"raw capture hash mismatch for {entry['id']}")
+                    if not capture_is_closed(temp):
+                        skipped += 1
+                        print(f"deferred incomplete remote capture: {stream_name}/{symbol}/{filename}", flush=True)
+                        continue
                     publish_without_overwrite(temp, target)
                 restored += 1
                 print(f"restored {stream_name}/{symbol}/{target.name}")

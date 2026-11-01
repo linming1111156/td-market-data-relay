@@ -435,6 +435,9 @@ For a long-running local recovery worker, set `TD_RELAY_BASE_URL` and
 default and rechecks the full remotely retained 73-hour index on every pass.
 Missing local capture files are restored after remote and decompressed hashes
 verify; conflicting same-name files are left untouched and reported as errors.
+The sync client also requires a complete `capture_stopped` record before it
+publishes a download; entries that still refer to a growing remote capture are
+deferred and retried on the next scan.
 After an interrupted sync, partial download/decompression files are removed on
 retry only after confirming the recorded owner process has exited.
 Only after a full index scan does the worker advance its last-successful-scan
