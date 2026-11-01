@@ -93,7 +93,11 @@ def open_request(request: urllib.request.Request, timeout: int):
     if target.scheme != "https" or not target.hostname:
         raise ValueError("SOCKS5 collector requests must use HTTPS")
     port = target.port or 443
-    proxy = SocksProxy.from_url(proxy_url)
+    proxy_parts = urllib.parse.urlsplit(proxy_url)
+    socks5_url = urllib.parse.urlunsplit((
+        "socks5", proxy_parts.netloc, "", "", ""
+    ))
+    proxy = SocksProxy.from_url(socks5_url, rdns=proxy_parts.scheme == "socks5h")
     proxy_socket = proxy.connect(dest_host=target.hostname, dest_port=port, timeout=timeout)
     try:
         tls_socket = ssl.create_default_context().wrap_socket(
