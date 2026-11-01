@@ -486,14 +486,18 @@ This is a separate local service set; it does not configure a proxy, Cloudflare
 Tunnel, or Gateway/shadow/live trading path. The existing VPS deployment is
 unchanged.
 
-The installer starts three systemd-managed BTCUSDT collectors: Spot depth,
-trades, and one-minute klines. Each collector writes a one-hour JSONL slice,
-records event and receive times plus disconnect/gap information, then restarts
-to begin a new slice. The local archive keeps one hour of raw files and zstd
-archives for up to 73 hours, with 1 GiB hot and 12 GiB compressed caps. Early
-discard is recorded by the same bounded loss ledger used by the relay. Data is
-stored under `/mnt/data/td-market-data-local`; the relay API binds only to
-`127.0.0.1:18080`.
+The installer starts six systemd-managed BTCUSDT collectors: Spot depth,
+trades, and one-minute klines; USD-M aggregate trades and one-minute klines;
+and finalized USD-M Funding settlements. Each collector writes a one-hour
+JSONL slice, records event and receive times plus disconnect/gap information,
+then restarts to begin a new slice. The Funding collector persists its cursor
+so hourly rotation does not lose settled rows. The local archive keeps one
+hour of raw files and zstd archives for up to 73 hours, with 1 GiB hot and
+12 GiB compressed caps. Early discard is recorded by the same bounded loss
+ledger used by the relay. Data is stored under `/mnt/data/td-market-data-local`;
+the relay API binds only to `127.0.0.1:18080`. USD-M Mark Price and depth
+capture continue through the separate Gateway research capture schedule, so
+the local installer does not create duplicate streams for them.
 
 On a local Debian/Ubuntu host with Python 3.13, `uv`, and systemd, run:
 
@@ -509,17 +513,23 @@ retention with:
 systemctl status td-market-data-local-relay.service \
   'td-market-data-local-collector@spot-depth.service' \
   'td-market-data-local-collector@spot-trades.service' \
-  'td-market-data-local-collector@spot-klines-1m.service'
+  'td-market-data-local-collector@spot-klines-1m.service' \
+  'td-market-data-local-collector@usdm-aggtrades.service' \
+  'td-market-data-local-collector@usdm-klines-1m.service' \
+  'td-market-data-local-collector@usdm-finalized-funding.service'
 find /mnt/data/td-market-data-local -maxdepth 4 -type f -printf '%TY-%Tm-%TdT%TH:%TM:%TS %s %p\n'
 ```
 
-Stop the local Spot capture with:
+Stop the local collectors with:
 
 ```sh
 systemctl disable --now \
   td-market-data-local-collector@spot-depth.service \
   td-market-data-local-collector@spot-trades.service \
-  td-market-data-local-collector@spot-klines-1m.service
+  td-market-data-local-collector@spot-klines-1m.service \
+  td-market-data-local-collector@usdm-aggtrades.service \
+  td-market-data-local-collector@usdm-klines-1m.service \
+  td-market-data-local-collector@usdm-finalized-funding.service
 ```
 
 Leave the local relay running so it can archive the final closed slices. The

@@ -67,6 +67,36 @@ if [[ ! -e "$ETC_ROOT/local-capture.env" ]]; then
   printf 'HOT_ROOT=%s/hot\nCURSOR_ROOT=%s/state\nSOURCE_HOST_ID=codex-local\nSOURCE_REVISION=%s\n' \
     "$DATA_ROOT" "$DATA_ROOT" "$(git -C "$SOURCE_ROOT" rev-parse --short=12 HEAD)" \
     >"$ETC_ROOT/local-capture.env"
+else
+  /usr/bin/python3 - "$ETC_ROOT/local-capture.env" \
+    "$(git -C "$SOURCE_ROOT" rev-parse --short=12 HEAD)" <<'PY'
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+path = Path(sys.argv[1])
+revision = sys.argv[2]
+lines = path.read_text().splitlines()
+matches = [index for index, line in enumerate(lines) if line.startswith("SOURCE_REVISION=")]
+if len(matches) != 1:
+    raise SystemExit("local capture environment must contain exactly one SOURCE_REVISION")
+lines[matches[0]] = f"SOURCE_REVISION={revision}"
+fd, temporary_name = tempfile.mkstemp(prefix=".local-capture.", dir=path.parent)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as output:
+        output.write("\n".join(lines) + "\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary_name, path)
+except BaseException:
+    try:
+        os.unlink(temporary_name)
+    except FileNotFoundError:
+        pass
+    raise
+PY
 fi
 if [[ ! -e "$ETC_ROOT/local-relay.env" ]]; then
   relay_key=$(/usr/bin/python3 -c 'import secrets; print(secrets.token_hex(32))')
@@ -139,7 +169,13 @@ systemd-analyze verify \
   /etc/systemd/system/td-market-data-local-relay.service
 systemctl daemon-reload
 systemctl enable --now td-market-data-local-relay.service
-for stream in spot-depth spot-trades spot-klines-1m; do
+for stream in \
+  spot-depth \
+  spot-trades \
+  spot-klines-1m \
+  usdm-aggtrades \
+  usdm-klines-1m \
+  usdm-finalized-funding; do
   systemctl enable --now "td-market-data-local-collector@${stream}.service"
 done
 
@@ -150,4 +186,7 @@ echo "Relay binds to 127.0.0.1:18080; no public tunnel is configured"
 systemctl --no-pager --full status td-market-data-local-relay.service \
   td-market-data-local-collector@spot-depth.service \
   td-market-data-local-collector@spot-trades.service \
-  td-market-data-local-collector@spot-klines-1m.service
+  td-market-data-local-collector@spot-klines-1m.service \
+  td-market-data-local-collector@usdm-aggtrades.service \
+  td-market-data-local-collector@usdm-klines-1m.service \
+  td-market-data-local-collector@usdm-finalized-funding.service
