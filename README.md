@@ -66,7 +66,12 @@ python3 export_usdm_funding_dataset.py \
 
 The publisher refuses capture gaps, bad raw-response/frame hashes, stale
 pre-settlement Mark evidence, receive-time polling gaps, missing or extra
-settlements, and conflicting settlement records. Each published row retains
+settlements, and conflicting settlement records. Mark observations must cover
+the requested window start and end within the configured 5-second receive-gap
+bound; the final sample may precede the exclusive end by at most that bound.
+The finalized API `fundingTime` must uniquely match its Mark-derived scheduled
+time within 1,000 ms; both timestamps and their signed offset are preserved.
+Each published row retains
 `funding_time_ns` and `available_at_ns` separately so accounting time is not
 confused with the time the finalized rate became observable. Output is
 create-only and binds all source capture hashes, collector/converter hashes,

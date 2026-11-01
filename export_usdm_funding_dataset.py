@@ -22,6 +22,7 @@ from export_spot_depth_dataset import canonical, file_sha256, source_revision
 MAX_CAPTURE_BYTES = 256 * 1024 * 1024
 MAX_LINE_BYTES = 2 * 1024 * 1024
 MAX_EVENTS = 10_000
+FUNDING_SCHEDULE_ALIGNMENT_TOLERANCE_MS = 1_000
 
 
 class FundingDatasetRejected(ValueError):
@@ -210,12 +211,16 @@ def mark_observations(paths: list[Path], symbol: str) -> tuple[list[dict[str, An
 
 def expected_schedule(observations: list[dict[str, Any]], start_ns: int, end_ns: int,
                       max_pre_settlement_age_ms: int) -> list[dict[str, Any]]:
-    if observations[0]["received_at_ns"] > start_ns or observations[-1]["received_at_ns"] < end_ns:
-        raise FundingDatasetRejected("Mark observations do not cover both edges of the requested window")
+    max_gap_ns = max_pre_settlement_age_ms * 1_000_000
+    if (observations[0]["received_at_ns"] > start_ns
+            or observations[-1]["received_at_ns"] < end_ns - max_gap_ns):
+        raise FundingDatasetRejected(
+            "Mark observations do not cover the requested window edges within the receive-gap bound"
+        )
     receive_gaps = [right["received_at_ns"] - left["received_at_ns"]
                     for left, right in zip(observations, observations[1:])]
-    max_gap_ns = max(receive_gaps, default=0)
-    if max_gap_ns > max_pre_settlement_age_ms * 1_000_000:
+    largest_receive_gap_ns = max(receive_gaps, default=0)
+    if largest_receive_gap_ns > max_gap_ns:
         raise FundingDatasetRejected("Mark capture chain has a receive-time gap in the requested window")
     by_funding_time: dict[int, list[dict[str, Any]]] = {}
     for observation in observations:
@@ -305,17 +310,29 @@ def funding_rows(paths: list[Path], symbol: str, schedule: list[dict[str, Any]],
                     mark = item.get("markPrice")
                     if mark is not None:
                         finite_decimal(mark, "settlement mark price", positive=True)
-                    if time_ms in expected:
-                        normalized = {"funding_time_ms": time_ms, "available_at_ns": received_ns,
+                    matches = [scheduled_ms for scheduled_ms in expected
+                               if abs(time_ms - scheduled_ms) <= FUNDING_SCHEDULE_ALIGNMENT_TOLERANCE_MS]
+                    if len(matches) > 1:
+                        raise FundingDatasetRejected(
+                            f"finalized Funding timestamp ambiguously matches Mark schedule: {time_ms}"
+                        )
+                    if matches:
+                        scheduled_ms = matches[0]
+                        normalized = {"funding_time_ms": time_ms,
+                                      "scheduled_funding_time_ms": scheduled_ms,
+                                      "funding_time_offset_ms": time_ms - scheduled_ms,
+                                      "available_at_ns": received_ns,
                                       "funding_rate": rate, "mark_price": mark,
                                       "rate_type": item.get("rateType", "unknown"),
                                       "api_response_sha256": row["raw_response_sha256"],
                                       "raw_funding_row": item}
-                        prior = received_rows.get(time_ms)
+                        prior = received_rows.get(scheduled_ms)
                         if prior is not None and prior["raw_funding_row"] != item:
-                            raise FundingDatasetRejected(f"conflicting finalized Funding rows at {time_ms}")
+                            raise FundingDatasetRejected(
+                                f"conflicting finalized Funding rows for scheduled time {scheduled_ms}"
+                            )
                         if prior is None or received_ns < prior["available_at_ns"]:
-                            received_rows[time_ms] = normalized
+                            received_rows[scheduled_ms] = normalized
                 pages.append((received_ns, row["raw_response_sha256"]))
                 page_count += 1
             else:
@@ -375,6 +392,8 @@ def publish(mark_paths: list[Path], funding_paths: list[Path], output: Path, sym
                 record = {"record_type": "funding_settlement", "symbol": symbol,
                           "funding_time_ms": settlement["funding_time_ms"],
                           "funding_time_ns": settlement["funding_time_ms"] * 1_000_000,
+                          "scheduled_funding_time_ms": settlement["scheduled_funding_time_ms"],
+                          "funding_time_offset_ms": settlement["funding_time_offset_ms"],
                           "available_at_ns": settlement["available_at_ns"],
                           "funding_rate": settlement["funding_rate"],
                           "mark_price": settlement["mark_price"], "rate_type": settlement["rate_type"],
@@ -403,7 +422,8 @@ def publish(mark_paths: list[Path], funding_paths: list[Path], output: Path, sym
                     "converter_code_sha256": file_sha256(Path(__file__).resolve()),
                     "builder_source": builder, "replay_usable": builder["tree_sha256"] is not None,
                     "max_pre_settlement_observation_age_ms": max_pre_settlement_age_ms,
-                    "max_funding_poll_gap_ms": max_poll_gap_ms}
+                    "max_funding_poll_gap_ms": max_poll_gap_ms,
+                    "funding_time_alignment_tolerance_ms": FUNDING_SCHEDULE_ALIGNMENT_TOLERANCE_MS}
         manifest_path = stage / "manifest.json"
         with manifest_path.open("xb") as stream:
             stream.write(json.dumps(manifest, sort_keys=True, indent=2).encode() + b"\n")

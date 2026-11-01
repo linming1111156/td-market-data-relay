@@ -86,6 +86,11 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
     if not isinstance(expected, list) or not expected or not isinstance(schedule, list) or len(schedule) != len(expected):
         raise DatasetRejected("settlement schedule is absent or malformed")
     max_age_ms = require_uint(manifest.get("max_pre_settlement_observation_age_ms"), "maximum Mark age")
+    timestamp_tolerance_ms = require_uint(
+        manifest.get("funding_time_alignment_tolerance_ms"), "Funding schedule alignment tolerance"
+    )
+    if timestamp_tolerance_ms != 1_000:
+        raise DatasetRejected("Funding schedule alignment tolerance is not the approved 1000 ms bound")
     scheduled: list[int] = []
     for item in schedule:
         if not isinstance(item, dict):
@@ -121,12 +126,18 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
                 raise DatasetRejected(f"events.jsonl line {line} has invalid event identity")
             time_ms = require_uint(event.get("funding_time_ms"), "Funding time")
             time_ns = require_uint(event.get("funding_time_ns"), "Funding time ns")
+            scheduled_ms = require_uint(event.get("scheduled_funding_time_ms"), "scheduled Funding time")
+            offset_ms = event.get("funding_time_offset_ms")
             available_ns = require_uint(event.get("available_at_ns"), "Funding availability time")
             raw_row = event.get("raw_funding_row")
             if not isinstance(raw_row, dict):
                 raise DatasetRejected(f"events.jsonl line {line} raw Funding row is missing")
             if (time_ns != time_ms * 1_000_000 or available_ns < time_ns
                     or raw_row.get("fundingTime") != time_ms
+                    or scheduled_ms not in expected
+                    or isinstance(offset_ms, bool) or not isinstance(offset_ms, int)
+                    or offset_ms != time_ms - scheduled_ms
+                    or abs(offset_ms) > timestamp_tolerance_ms
                     or raw_row.get("symbol") != symbol
                     or raw_row.get("fundingRate") != event.get("funding_rate")
                     or raw_row.get("markPrice") != event.get("mark_price")
@@ -139,7 +150,7 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
             events.append(event)
             event_hasher.update(raw)
             logical.update(raw)
-    if not events or [event["funding_time_ms"] for event in events] != expected:
+    if not events or [event["scheduled_funding_time_ms"] for event in events] != expected:
         raise DatasetRejected("event rows do not exactly match the expected settlement schedule")
     if manifest.get("event_count") != len(events):
         raise DatasetRejected("manifest event count mismatch")
