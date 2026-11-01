@@ -80,6 +80,54 @@ def input_file(path: Path, name: str) -> dict[str, Any]:
             "json_type": type(value).__name__}
 
 
+def read_manifest(path: Path, name: str) -> dict[str, Any]:
+    manifest_path = path / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ReplayBundleRejected(f"{name} manifest must be a regular file")
+    if manifest_path.stat().st_size > MAX_INPUT_JSON_BYTES:
+        raise ReplayBundleRejected(f"{name} manifest exceeds the JSON input limit")
+    try:
+        manifest = json.loads(manifest_path.read_bytes())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReplayBundleRejected(f"{name} manifest is invalid JSON") from error
+    if not isinstance(manifest, dict):
+        raise ReplayBundleRejected(f"{name} manifest must be an object")
+    return manifest
+
+
+def verify_input_compatibility(depth_path: Path, mark_path: Path,
+                               funding_path: Path) -> dict[str, Any]:
+    depth = read_manifest(depth_path, "depth Dataset")
+    mark = read_manifest(mark_path, "Mark Dataset")
+    funding = read_manifest(funding_path, "Funding Dataset")
+    if (depth.get("schema") != "td_gateway_usdm_depth_dataset" or depth.get("market") != "USD_M"
+            or depth.get("contract") != "PERPETUAL" or depth.get("replay_usable") is not True):
+        raise ReplayBundleRejected("depth Dataset is not a replay-usable USD-M perpetual Dataset")
+    for name, manifest, expected_kind in (("Mark", mark, "mark_price_observation"),
+                                           ("Funding", funding, "funding_rate")):
+        if (manifest.get("schema") != "td_gateway_futures_supplemental_dataset"
+                or manifest.get("market") != "USD_M" or manifest.get("contract") != "PERPETUAL"
+                or manifest.get("kind") != expected_kind):
+            raise ReplayBundleRejected(f"{name} Dataset has the wrong market/schema/kind")
+    if mark.get("replay_usable") is not True or mark.get("coverage_known") is not True:
+        raise ReplayBundleRejected("Mark Dataset lacks complete point-in-time replay coverage")
+    if funding.get("settlement_usable") is not True:
+        raise ReplayBundleRejected("Funding Dataset lacks verified finalized settlement facts")
+    symbol = depth.get("symbol")
+    if not isinstance(symbol, str) or mark.get("symbol") != symbol or funding.get("symbol") != symbol:
+        raise ReplayBundleRejected("depth, Mark, and Funding symbols differ")
+    if symbol != "BTCUSDT":
+        raise ReplayBundleRejected("the current USD-M account replay supports BTCUSDT only")
+    window = depth.get("window")
+    if not isinstance(window, dict) or mark.get("window") != window or funding.get("window") != window:
+        raise ReplayBundleRejected("depth, Mark, and Funding windows differ")
+    start, end = window.get("start_ns"), window.get("end_ns")
+    if (not isinstance(start, int) or isinstance(start, bool) or not isinstance(end, int)
+            or isinstance(end, bool) or start >= end):
+        raise ReplayBundleRejected("Dataset window is invalid")
+    return {"symbol": symbol, "window": window}
+
+
 def create_only_json(path: Path, value: dict[str, Any]) -> None:
     if not path.is_absolute() or not path.parent.is_dir() or path.exists() or path.is_symlink():
         raise ReplayBundleRejected("evidence output must be a new absolute path in an existing directory")
@@ -125,6 +173,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     depth_before = dataset_inventory(depth_path, "depth Dataset")
     mark_before = dataset_inventory(mark_path, "Mark Dataset")
     funding_before = dataset_inventory(funding_path, "Funding Dataset")
+    replay_identity = verify_input_compatibility(depth_path, mark_path, funding_path)
     config_before = input_file(args.config, "config")
     orders_before = input_file(args.orders, "orders")
     selection_path = None
@@ -167,6 +216,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if verification.returncode != 0:
         raise ReplayBundleRejected(f"deterministic replay verification failed ({verification.returncode}): "
                                    f"{verification.stderr[-4000:]}")
+    report_hash_after_verification = sha256_file(report_path)
 
     depth_after = dataset_inventory(depth_path, "depth Dataset")
     mark_after = dataset_inventory(mark_path, "Mark Dataset")
@@ -180,12 +230,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise ReplayBundleRejected("an input or replay executable changed during the replay")
 
     report_hash = sha256_file(report_path)
+    if report_hash != report_hash_after_verification:
+        raise ReplayBundleRejected("comparison report changed after deterministic verification")
     candidate = report.get("candidate")
     candidate_execution = candidate.get("execution") if isinstance(candidate, dict) else None
     if not isinstance(candidate_execution, dict) or not isinstance(candidate_execution.get("symbol"), str):
         raise ReplayBundleRejected("replay report lacks the candidate execution identity")
     evidence = {"schema": "td_market_data_usdm_replay_evidence", "version": 1,
-                "symbol": candidate_execution.get("symbol"),
+                "symbol": candidate_execution.get("symbol"), "window": replay_identity["window"],
                 "replay_executable": {"path": str(executable), "sha256": executable_hash},
                 "inputs": {"depth": depth_after, "mark": mark_after, "funding": funding_after,
                            "config": config_after, "orders": orders_after,
