@@ -326,6 +326,13 @@ if they are reached, the API will not contain the full 73 hours. Set both
 `MAX_ARCHIVE_BYTES` and `MAX_HOT_BYTES` to measured values appropriate for the
 VPS disk before deployment.
 
+Quota-driven early discards are written to a bounded, 73-hour loss ledger and
+included in the authenticated capture index. The local sync worker persists new
+loss records in `.relay-losses.jsonl` under its output root. If the VPS cannot
+record a discard safely, it keeps the capture and reports that the quota could
+not be reclaimed; disk pressure is surfaced instead of hiding the missing
+capture.
+
 ## Local recovery
 
 `sync.py` downloads retained capture files, verifies their SHA-256, decompresses

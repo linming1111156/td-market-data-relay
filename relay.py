@@ -26,7 +26,116 @@ DELETE_SECONDS = int(os.environ.get("DELETE_SECONDS", "262800"))
 MAX_ARCHIVE_BYTES = int(os.environ.get("MAX_ARCHIVE_BYTES", str(4 * 1024**3)))
 MAX_HOT_BYTES = int(os.environ.get("MAX_HOT_BYTES", str(1024**3)))
 MAX_REQUEST_BYTES = 1024
+MAX_LOSS_LEDGER_BYTES = 16 * 1024 * 1024
+LOSS_SCHEMA = "td_market_data_relay_early_discard_v1"
 INDEX_HASH_CACHE: dict[tuple[str, int, int], str] = {}
+
+
+def _loss_ledger_path() -> Path:
+    return ARCHIVE / "early-discard-ledger.jsonl"
+
+
+def _read_loss_rows() -> list[dict[str, object]]:
+    path = _loss_ledger_path()
+    if not path.exists():
+        return []
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_LOSS_LEDGER_BYTES:
+        raise OSError("early-discard ledger is not a bounded regular file")
+    rows = []
+    with path.open("rb") as stream:
+        for line_number, raw in enumerate(stream, 1):
+            if not raw.endswith(b"\n") or len(raw) > 16 * 1024:
+                raise OSError(f"early-discard ledger line {line_number} is truncated or oversized")
+            try:
+                row = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise OSError(f"early-discard ledger line {line_number} is invalid JSON") from error
+            if not isinstance(row, dict) or row.get("schema") != LOSS_SCHEMA:
+                raise OSError(f"early-discard ledger line {line_number} has an invalid schema")
+            rows.append(row)
+    return rows
+
+
+def _write_loss_rows(rows: list[dict[str, object]]) -> None:
+    path = _loss_ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = b"".join(json.dumps(row, separators=(",", ":"), sort_keys=True).encode() + b"\n"
+                       for row in rows)
+    if len(encoded) > MAX_LOSS_LEDGER_BYTES:
+        raise OSError("early-discard ledger reached its 16 MiB safety bound")
+    temp = path.with_name(path.name + f".tmp-{os.getpid()}")
+    created = False
+    try:
+        with temp.open("xb") as stream:
+            created = True
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+    finally:
+        if created:
+            temp.unlink(missing_ok=True)
+    parent_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def prune_loss_ledger(now_ns: int | None = None) -> None:
+    path = _loss_ledger_path()
+    if not path.exists():
+        return
+    now_ns = time.time_ns() if now_ns is None else now_ns
+    cutoff_ns = now_ns - DELETE_SECONDS * 1_000_000_000
+    rows = _read_loss_rows()
+    retained = [row for row in rows
+                if isinstance(row.get("discarded_at_ns"), int)
+                and row["discarded_at_ns"] >= cutoff_ns]
+    if len(retained) != len(rows):
+        _write_loss_rows(retained)
+
+
+def record_early_discard(root: Path, path: Path, reason: str) -> bool:
+    relative = path.relative_to(root)
+    parts = relative.parts
+    if len(parts) != 3:
+        raise OSError(f"cannot record early discard for unexpected path: {relative}")
+    stream, symbol, filename = parts
+    match = re.fullmatch(rf"{re.escape(symbol)}-([0-9]{{8}}T[0-9]{{6}}Z)-([0-9a-f]{{32}})\.jsonl(?:\.zst)?", filename)
+    if match is None:
+        raise OSError(f"cannot record early discard for malformed capture name: {relative}")
+    raw_hash: str | None = None
+    if root == ARCHIVE:
+        meta_path = path.with_name(path.name + ".meta.json")
+        try:
+            metadata = json.loads(meta_path.read_bytes())
+            candidate_hash = metadata.get("raw_sha256")
+            if isinstance(candidate_hash, str) and re.fullmatch(r"[0-9a-f]{64}", candidate_hash):
+                raw_hash = candidate_hash
+        except (OSError, json.JSONDecodeError):
+            pass
+    now_ns = time.time_ns()
+    row: dict[str, object] = {"schema": LOSS_SCHEMA, "version": 1,
+                              "capture_id": match.group(2), "stream": stream,
+                              "symbol": symbol, "path": str(relative),
+                              "reason": reason, "discarded_at_ns": now_ns,
+                              "raw_sha256": raw_hash}
+    existing = _read_loss_rows()
+    if any(item.get("capture_id") == match.group(2) and item.get("path") == str(relative)
+           and item.get("reason") == reason for item in existing):
+        return True
+    cutoff_ns = now_ns - DELETE_SECONDS * 1_000_000_000
+    retained = [item for item in existing
+                if isinstance(item.get("discarded_at_ns"), int)
+                and item["discarded_at_ns"] >= cutoff_ns]
+    retained.append(row)
+    try:
+        _write_loss_rows(retained)
+    except OSError as error:
+        print(f"early discard refused because loss ledger could not be updated: {error}", flush=True)
+        return False
+    return True
 
 
 def sha256_file(path: Path) -> str:
@@ -66,6 +175,10 @@ def compress_old_captures() -> None:
     ARCHIVE.mkdir(parents=True, exist_ok=True)
     HOT.mkdir(parents=True, exist_ok=True)
     cleanup_stale_temps(ARCHIVE)
+    try:
+        prune_loss_ledger()
+    except Exception as error:
+        print(f"early-discard ledger pruning error: {type(error).__name__}: {error}", flush=True)
     # Oldest archives are discarded first when the explicitly bounded quota is reached.
     archived = sorted((p for p in ARCHIVE.rglob("*.jsonl.zst") if p.is_file()), key=lambda p: p.stat().st_mtime)
     total = sum(p.stat().st_size for p in archived)
@@ -127,6 +240,8 @@ def compress_old_captures() -> None:
                 oldest = archived.pop(0)
                 try:
                     old_size = oldest.stat().st_size
+                    if not record_early_discard(ARCHIVE, oldest, "archive_quota"):
+                        break
                     oldest.unlink()
                     oldest.with_name(oldest.name + ".meta.json").unlink(missing_ok=True)
                     total -= old_size
@@ -170,6 +285,8 @@ def enforce_hot_cap() -> None:
                 except BlockingIOError:
                     continue
                 size = path.stat().st_size
+                if not record_early_discard(HOT, path, "hot_storage_quota"):
+                    continue
                 path.unlink()
                 total -= size
                 print(f"hot storage cap discarded oldest capture: {path.relative_to(HOT)}", flush=True)
@@ -260,6 +377,23 @@ def capture_index(since_ns: int, until_ns: int, stream_filter: str, symbol_filte
     return sorted(result, key=lambda item: (item["modified_at_unix_ns"], item["path"]))
 
 
+def capture_losses(since_ns: int, until_ns: int, stream_filter: str,
+                   symbol_filter: str) -> list[dict[str, object]]:
+    rows = []
+    for row in _read_loss_rows():
+        discarded_ns = row.get("discarded_at_ns")
+        if not isinstance(discarded_ns, int) or isinstance(discarded_ns, bool):
+            raise OSError("early-discard ledger has an invalid timestamp")
+        if not since_ns <= discarded_ns <= until_ns:
+            continue
+        if stream_filter and row.get("stream") != stream_filter:
+            continue
+        if symbol_filter and row.get("symbol") != symbol_filter.upper():
+            continue
+        rows.append(row)
+    return rows
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "td-market-data-relay/0.1"
 
@@ -300,7 +434,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             entries = capture_index(since, until, params.get("stream", [""])[0],
                                     params.get("symbol", [""])[0])
-            self.send_json(200, {"schema": "td_market_data_relay_index_v1", "captures": entries})
+            losses = capture_losses(since, until, params.get("stream", [""])[0],
+                                    params.get("symbol", [""])[0])
+            self.send_json(200, {"schema": "td_market_data_relay_index_v1",
+                                 "captures": entries, "losses": losses})
             return
         if parsed.path.startswith("/v1/captures/"):
             capture_id = parsed.path.removeprefix("/v1/captures/")

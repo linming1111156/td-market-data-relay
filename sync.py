@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import re
+import stat
 import time
 import urllib.error
 import urllib.parse
@@ -18,6 +20,8 @@ from collector import SUPPORTED_STREAMS as COLLECTOR_SUPPORTED_STREAMS
 
 SUPPORTED_STREAMS = COLLECTOR_SUPPORTED_STREAMS
 RELAY_RETENTION_NS = 73 * 3600 * 1_000_000_000
+LOSS_SCHEMA = "td_market_data_relay_early_discard_v1"
+MAX_LOSS_LEDGER_BYTES = 16 * 1024 * 1024
 
 
 def continuous_scan_start(now_ns: int, since_ns: int) -> int:
@@ -55,6 +59,76 @@ def remove_abandoned_temp(path: Path) -> None:
     except PermissionError as error:
         raise RuntimeError(f"cannot verify temporary file owner {owner_pid}; left untouched: {path}") from error
     raise RuntimeError(f"temporary file owner {owner_pid} is still running; left untouched: {path}")
+
+
+def record_remote_losses(output: Path, losses: list[dict]) -> int:
+    validated = []
+    for row in losses:
+        if not isinstance(row, dict) or row.get("schema") != LOSS_SCHEMA or row.get("version") != 1:
+            raise RuntimeError("relay returned an invalid capture-loss record")
+        capture_id, stream_name, symbol = row.get("capture_id"), row.get("stream"), row.get("symbol")
+        relative_parts = Path(row.get("path", "")).parts
+        discarded_ns = row.get("discarded_at_ns")
+        if (not isinstance(capture_id, str) or re.fullmatch(r"[0-9a-f]{32}", capture_id) is None
+                or stream_name not in SUPPORTED_STREAMS
+                or not isinstance(symbol, str) or re.fullmatch(r"[A-Z0-9]{1,32}", symbol) is None
+                or len(relative_parts) != 3 or relative_parts[:2] != (stream_name, symbol)
+                or ".." in relative_parts
+                or relative_parts[2].split(".")[0].rsplit("-", 1)[-1] != capture_id
+                or row.get("reason") not in {"archive_quota", "hot_storage_quota"}
+                or not isinstance(discarded_ns, int) or isinstance(discarded_ns, bool) or discarded_ns < 0
+                or (row.get("raw_sha256") is not None
+                    and re.fullmatch(r"[0-9a-f]{64}", str(row.get("raw_sha256"))) is None)):
+            raise RuntimeError("relay returned a malformed capture-loss record")
+        validated.append(row)
+    if not validated:
+        return 0
+    ledger = output / ".relay-losses.jsonl"
+    if ledger.is_symlink():
+        raise RuntimeError("local relay-loss evidence path is a symlink")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(ledger, flags, 0o600)
+    try:
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size > MAX_LOSS_LEDGER_BYTES:
+            raise RuntimeError("local relay-loss evidence is not a bounded regular file")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        size = os.fstat(fd).st_size
+        raw = os.pread(fd, size + 1, 0)
+        if len(raw) != size:
+            raise RuntimeError("could not read complete local relay-loss evidence")
+        seen = set()
+        if raw:
+            for line_number, line in enumerate(raw.splitlines(), 1):
+                try:
+                    existing = json.loads(line)
+                except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                    raise RuntimeError(f"local relay-loss evidence line {line_number} is invalid") from error
+                if not isinstance(existing, dict) or existing.get("schema") != LOSS_SCHEMA:
+                    raise RuntimeError(f"local relay-loss evidence line {line_number} has invalid schema")
+                seen.add((existing.get("capture_id"), existing.get("discarded_at_ns"), existing.get("reason")))
+        additions = [row for row in validated
+                     if (row["capture_id"], row["discarded_at_ns"], row["reason"]) not in seen]
+        encoded = b"".join(json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+                           for row in additions)
+        if size + len(encoded) > MAX_LOSS_LEDGER_BYTES:
+            raise RuntimeError("local relay-loss evidence reached its 16 MiB safety bound")
+        os.lseek(fd, 0, os.SEEK_END)
+        pending = memoryview(encoded)
+        while pending:
+            written = os.write(fd, pending)
+            if written <= 0:
+                raise OSError("short write to local relay-loss evidence")
+            pending = pending[written:]
+        os.fsync(fd)
+        parent_fd = os.open(output, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+        return len(additions)
+    finally:
+        os.close(fd)
 
 
 def publish_without_overwrite(source: Path, target: Path) -> None:
@@ -103,6 +177,13 @@ def main() -> None:
             raise RuntimeError(f"could not fetch relay index: {error}") from error
         if index.get("schema") != "td_market_data_relay_index_v1" or not isinstance(index.get("captures"), list):
             raise RuntimeError("relay returned an unsupported index schema")
+        losses = index.get("losses", [])
+        if not isinstance(losses, list):
+            raise RuntimeError("relay returned an invalid capture-loss inventory")
+        new_losses = record_remote_losses(args.output, losses)
+        if losses:
+            print(f"WARNING: relay reports early-discarded captures={len(losses)}; "
+                  f"newly recorded={new_losses} in {args.output / '.relay-losses.jsonl'}", flush=True)
         restored = skipped = 0
         for entry in index["captures"]:
             stream_name = entry.get("stream")

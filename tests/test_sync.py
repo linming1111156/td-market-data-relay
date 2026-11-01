@@ -39,6 +39,35 @@ class RelayHandler(BaseHTTPRequestHandler):
 
 
 class SyncTests(unittest.TestCase):
+    def test_sync_persists_loss_inventory_from_relay_index(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            payload = b'{"record_type":"capture_stopped"}\n'
+            loss = {"schema": sync.LOSS_SCHEMA, "version": 1,
+                    "capture_id": "0123456789abcdef0123456789abcdef",
+                    "stream": "usdm-aggtrades", "symbol": "BTCUSDT",
+                    "path": "usdm-aggtrades/BTCUSDT/BTCUSDT-20261031T120000Z-0123456789abcdef0123456789abcdef.jsonl.zst",
+                    "reason": "archive_quota", "discarded_at_ns": 1, "raw_sha256": None}
+            output = self.run_sync(directory, self.entry_for(payload), payload, losses=[loss])
+            recovered_loss = output / ".relay-losses.jsonl"
+            self.assertTrue(recovered_loss.exists())
+            self.assertEqual(json.loads(recovered_loss.read_text().strip()), loss)
+
+    def test_persists_and_deduplicates_relay_capture_losses(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            output.mkdir(exist_ok=True)
+            row = {"schema": sync.LOSS_SCHEMA, "version": 1,
+                   "capture_id": "0123456789abcdef0123456789abcdef",
+                   "stream": "usdm-depth", "symbol": "BTCUSDT",
+                   "path": "usdm-depth/BTCUSDT/BTCUSDT-20261031T120000Z-0123456789abcdef0123456789abcdef.jsonl.zst",
+                   "reason": "archive_quota", "discarded_at_ns": 1, "raw_sha256": "a" * 64}
+            self.assertEqual(sync.record_remote_losses(output, [row]), 1)
+            self.assertEqual(sync.record_remote_losses(output, [row]), 0)
+            records = (output / ".relay-losses.jsonl").read_text().splitlines()
+            self.assertEqual(len(records), 1)
+            self.assertEqual(json.loads(records[0]), row)
+
     def test_removes_stale_partial_download_only_after_owner_exit(self):
         with tempfile.TemporaryDirectory() as temporary:
             partial = Path(temporary) / "capture.jsonl.download-987654321"
@@ -74,9 +103,10 @@ class SyncTests(unittest.TestCase):
                     output = self.run_sync(directory, self.entry_for(payload, stream=stream), payload)
                     self.assertEqual(len(list((output / stream / "BTCUSDT").glob("*.jsonl"))), 1)
 
-    def run_sync(self, directory: Path, entry: dict, payload: bytes, exit_expected=0):
+    def run_sync(self, directory: Path, entry: dict, payload: bytes, exit_expected=0,
+                 losses: list[dict] | None = None):
         RelayHandler.index_body = json.dumps({
-            "schema": "td_market_data_relay_index_v1", "captures": [entry],
+            "schema": "td_market_data_relay_index_v1", "captures": [entry], "losses": losses or [],
         }).encode()
         RelayHandler.payload = payload
         server = ThreadingHTTPServer(("127.0.0.1", 0), RelayHandler)

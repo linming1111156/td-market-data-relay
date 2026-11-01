@@ -115,7 +115,7 @@ class RelayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             hot, archive = base / "hot", base / "archive"
-            old = archive / "usdm-depth" / "BTCUSDT" / "old-0123456789abcdef0123456789abcdef.jsonl.zst"
+            old = archive / "usdm-depth" / "BTCUSDT" / "BTCUSDT-20261031T120000Z-0123456789abcdef0123456789abcdef.jsonl.zst"
             old.parent.mkdir(parents=True, exist_ok=True)
             old.write_bytes(b"x" * 450)
             metadata = old.with_name(old.name + ".meta.json")
@@ -126,9 +126,45 @@ class RelayTests(unittest.TestCase):
             with patch.object(relay, "HOT", hot), patch.object(relay, "ARCHIVE", archive), \
                     patch.object(relay, "MAX_ARCHIVE_BYTES", 500):
                 relay.compress_old_captures()
+                losses = relay.capture_losses(0, time.time_ns(), "", "")
             self.assertFalse(old.exists())
             self.assertFalse(metadata.exists())
             self.assertEqual(len(list(archive.rglob("*.jsonl.zst"))), 1)
+            self.assertEqual(len(losses), 1)
+            self.assertEqual(losses[0]["capture_id"], "0123456789abcdef0123456789abcdef")
+            self.assertEqual(losses[0]["reason"], "archive_quota")
+
+    def test_archive_quota_refuses_unrecorded_eviction_when_loss_ledger_is_full(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            hot, archive = base / "hot", base / "archive"
+            old = archive / "usdm-depth" / "BTCUSDT" / "BTCUSDT-20261031T120000Z-0123456789abcdef0123456789abcdef.jsonl.zst"
+            old.parent.mkdir(parents=True, exist_ok=True)
+            old.write_bytes(b"x" * 450)
+            metadata = old.with_name(old.name + ".meta.json")
+            metadata.write_text("{}\n")
+            old_time = time.time() - 2 * 3600
+            os.utime(old, (old_time, old_time))
+            incoming, _ = write_capture(hot)
+            with patch.object(relay, "HOT", hot), patch.object(relay, "ARCHIVE", archive), \
+                    patch.object(relay, "MAX_ARCHIVE_BYTES", 500), \
+                    patch.object(relay, "MAX_LOSS_LEDGER_BYTES", 1):
+                relay.compress_old_captures()
+            self.assertTrue(old.exists())
+            self.assertTrue(incoming.exists())
+
+    def test_hot_storage_quota_records_removed_raw_capture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            hot, archive = base / "hot", base / "archive"
+            capture, _ = write_capture(hot, start_seconds=time.time())
+            with patch.object(relay, "HOT", hot), patch.object(relay, "ARCHIVE", archive), \
+                    patch.object(relay, "MAX_HOT_BYTES", 1):
+                relay.enforce_hot_cap()
+                losses = relay.capture_losses(0, time.time_ns(), "", "")
+            self.assertFalse(capture.exists())
+            self.assertEqual(len(losses), 1)
+            self.assertEqual(losses[0]["reason"], "hot_storage_quota")
 
 
 if __name__ == "__main__":
