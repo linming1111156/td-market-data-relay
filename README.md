@@ -44,8 +44,9 @@ and Mark Price uses `/market` as documented in the official
 once a minute. Its persisted cursor is initialized to the collector's current
 time, so it does not backfill historical Funding; on restart it resumes after
 the last settlement already written to the raw capture. Each response retains
-the raw response bytes and hash, request cursor, and local receive wall and
-monotonic times. API failures are explicit gap/error records. This is the
+the HTTP status, exact raw response bytes and hash, byte/row counts, request
+cursor, and local receive wall and monotonic times. API failures are explicit
+gap/error records. This is the
 finalized settlement evidence; the WebSocket Mark Price stream remains a
 separate point-in-time observation. The public endpoint returns settlement
 history and accepts a start-time cursor, as described in Binance's

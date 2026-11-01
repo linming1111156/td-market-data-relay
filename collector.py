@@ -187,12 +187,15 @@ def get_snapshot(kind: str, symbol: str) -> tuple[dict[str, Any], str]:
     return value, body.decode("utf-8")
 
 
-def fetch_finalized_funding(symbol: str, start_time_ms: int) -> tuple[list[dict[str, Any]], str, str]:
+def fetch_finalized_funding(symbol: str, start_time_ms: int) -> tuple[list[dict[str, Any]], str, str, int]:
     query = urllib.parse.urlencode({"symbol": symbol, "startTime": start_time_ms, "limit": 1000})
     url = f"https://fapi.binance.com/fapi/v1/fundingRate?{query}"
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
     with urllib.request.urlopen(request, timeout=15) as response:
+        status = response.status
         raw = response.read(MAX_FRAME_BYTES + 1)
+    if status != 200:
+        raise ValueError(f"finalized Funding endpoint returned HTTP {status}")
     if len(raw) > MAX_FRAME_BYTES:
         raise ValueError("finalized Funding response exceeds one MiB")
     rows = json.loads(raw)
@@ -216,7 +219,7 @@ def fetch_finalized_funding(symbol: str, start_time_ms: int) -> tuple[list[dict[
         if previous_time is not None and funding_time <= previous_time:
             raise ValueError("finalized Funding rows are not in strict time order")
         previous_time = funding_time
-    return rows, raw.decode("utf-8"), url
+    return rows, raw.decode("utf-8"), url, status
 
 
 def read_or_initialize_funding_cursor(path: Path) -> tuple[int, int]:
@@ -292,7 +295,7 @@ async def run_finalized_funding_capture(args: argparse.Namespace, shutdown: asyn
                 received_ns = now_ns()
                 monotonic_ns = time.monotonic_ns()
                 try:
-                    rows, raw_response, url = await asyncio.to_thread(
+                    rows, raw_response, url, http_status = await asyncio.to_thread(
                         fetch_finalized_funding, symbol, cursor_start_ms)
                     received_ns = now_ns()
                     monotonic_ns = time.monotonic_ns()
@@ -300,6 +303,7 @@ async def run_finalized_funding_capture(args: argparse.Namespace, shutdown: asyn
                                    request_start_time_ms=cursor_start_ms,
                                    received_at_unix_ns=received_ns,
                                    receive_monotonic_ns=monotonic_ns,
+                                   http_status=http_status, response_bytes=len(raw_response.encode()),
                                    raw_response=raw_response,
                                    raw_response_sha256=sha256_bytes(raw_response.encode()),
                                    record_count=len(rows), funding_rows=rows)

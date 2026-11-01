@@ -30,6 +30,8 @@ class CollectorStreamTests(unittest.TestCase):
 
     def test_finalized_funding_request_is_future_cursor_bound_and_raw_verified(self):
         class Response:
+            status = 200
+
             def __enter__(self):
                 return self
 
@@ -41,11 +43,12 @@ class CollectorStreamTests(unittest.TestCase):
                                     "fundingRate": "0.0001", "markPrice": "101.25"}]).encode()
 
         with patch("collector.urllib.request.urlopen", return_value=Response()) as opener:
-            rows, raw, url = fetch_finalized_funding("BTCUSDT", 1_000)
+            rows, raw, url, status = fetch_finalized_funding("BTCUSDT", 1_000)
         self.assertIn("startTime=1000", url)
         opener.assert_called_once()
         self.assertEqual(rows[0]["fundingTime"], 2_000)
         self.assertEqual(json.loads(raw), rows)
+        self.assertEqual(status, 200)
 
     def test_funding_cursor_never_resets_to_historical_data_after_restart(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -60,6 +63,8 @@ class CollectorStreamTests(unittest.TestCase):
 
     def test_funding_cursor_rejects_responses_before_its_future_only_start(self):
         class Response:
+            status = 200
+
             def __enter__(self):
                 return self
 
