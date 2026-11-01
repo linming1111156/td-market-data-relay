@@ -18,7 +18,8 @@ def record(kind: str, **fields: object) -> dict[str, object]:
             "record_type": kind, **fields}
 
 
-def make_capture(path: Path, *, gap: bool = False) -> None:
+def make_capture(path: Path, *, gap: bool = False,
+                 receive_offsets_ns: tuple[int, ...] | None = None) -> None:
     session = "spot-session-1"
     rows: list[dict[str, object]] = [record(
         "capture_started", stream="spot-depth", symbol="BTCUSDT", max_gap_ms=30_000,
@@ -42,7 +43,7 @@ def make_capture(path: Path, *, gap: bool = False) -> None:
         frame = {"e": "depthUpdate", "s": "BTCUSDT", "E": event_ms,
                  "U": first, "u": final, "b": bids, "a": asks}
         raw_frame = compact(frame)
-        received_ns = event_ms * 1_000_000
+        received_ns = event_ms * 1_000_000 + (receive_offsets_ns[index] if receive_offsets_ns else 0)
         rows.append(record("market_frame", session_id=session,
                            received_at_unix_ns=received_ns,
                            receive_monotonic_ns=1_000_000_000 + index * 1_000_000_000,
@@ -73,6 +74,20 @@ class SpotDepthDatasetTests(unittest.TestCase):
             self.assertEqual(events[0]["event_ts_ns"], 3_000_000_000)
             self.assertEqual(events[0]["receive_ts_ns"], 3_000_000_000)
             self.assertEqual(manifest["source_capture_sha256"], hashlib.sha256(capture.read_bytes()).hexdigest())
+
+    def test_keeps_pre_window_exchange_event_that_arrives_after_window_opens(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture, output = root / "capture.jsonl", root / "dataset"
+            make_capture(capture, receive_offsets_ns=(600_000_000, 300_000_000,
+                                                       200_000_000, 100_000_000))
+            manifest = publish(capture, output, "BTCUSDT", 3_000_000_000, 5_000_000_000)
+            snapshot = json.loads((output / "snapshot.json").read_bytes())
+            events = [json.loads(line) for line in (output / "events.jsonl").read_bytes().splitlines()]
+            self.assertEqual(snapshot["last_update_id"], 100)
+            self.assertEqual(manifest["event_count"], 3)
+            self.assertEqual(events[0]["event_ts_ns"], 2_500_000_000)
+            self.assertEqual(events[0]["receive_ts_ns"], 3_100_000_000)
 
     def test_rejects_sequence_gap_without_publishing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

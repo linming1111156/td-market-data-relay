@@ -214,10 +214,12 @@ def publish(capture: Path, output: Path, symbol: str, start_ns: int, end_ns: int
                 except json.JSONDecodeError as error:
                     raise CaptureRejected(f"line {number}: invalid depth frame") from error
                 if (frame.get("e") != "depthUpdate" or frame.get("s") != symbol
-                        or frame.get("E") != row.get("event_time_ms")
                         or frame.get("U") != row.get("first_update_id")
                         or frame.get("u") != row.get("final_update_id")):
                     raise CaptureRejected(f"line {number}: raw frame identity/update IDs disagree")
+                if ((row.get("accepted_for_book") is True or row.get("event_time_ms") is not None)
+                        and frame.get("E") != row.get("event_time_ms")):
+                    raise CaptureRejected(f"line {number}: raw frame event time disagrees with parsed field")
                 first_id = uint(frame.get("U"), "first update ID", number)
                 final_id = uint(frame.get("u"), "final update ID", number)
                 event_ns = uint(frame.get("E"), "exchange event time", number) * 1_000_000
@@ -284,15 +286,13 @@ def publish(capture: Path, output: Path, symbol: str, start_ns: int, end_ns: int
     stop_ns = uint(stop.get("recorded_at_unix_ns"), "capture stop time", 0)
     if uint(start.get("recorded_at_monotonic_ns"), "start monotonic time", 1) >= uint(stop.get("recorded_at_monotonic_ns"), "stop monotonic time", 0):
         raise CaptureRejected("monotonic capture lifecycle is invalid")
-    if snapshot_ns > start_ns or bridge_ns > start_ns or start_ns_recorded > start_ns or stop_ns < end_ns:
-        raise CaptureRejected("capture must bridge before the requested window and continue through its end")
+    if snapshot_ns > start_ns or start_ns_recorded > start_ns or stop_ns < end_ns:
+        raise CaptureRejected("capture snapshot must precede the window and capture must continue through its end")
     bids = {p: Decimal(q) for p, q in snapshot["bids"]}
     asks = {p: Decimal(q) for p, q in snapshot["asks"]}
     selected: list[dict[str, Any]] = []
     for event in accepted:
         available_ns = max(event["event_ts_ns"], event["receive_ts_ns"])
-        if event["event_ts_ns"] < start_ns <= event["receive_ts_ns"]:
-            raise CaptureRejected("event-time/receive-time ordering would leak across window start")
         for change in event["changes"]:
             book = bids if change["side"] == "BID" else asks
             if Decimal(change["quantity"]) == 0:
@@ -301,6 +301,9 @@ def publish(capture: Path, output: Path, symbol: str, start_ns: int, end_ns: int
                 book[change["price"]] = Decimal(change["quantity"])
         if not bids or not asks or max(map(Decimal, bids)) >= min(map(Decimal, asks)):
             raise CaptureRejected("replayed order book is empty or crossed")
+        # An exchange event timestamp can precede local receipt. If receipt
+        # happens after the window opens, preserve the update as an in-window
+        # event and apply it only at its point-in-time availability.
         if start_ns <= available_ns < end_ns:
             selected.append(event)
     if not selected:

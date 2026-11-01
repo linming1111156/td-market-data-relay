@@ -164,7 +164,8 @@ class SyncTests(unittest.TestCase):
             directory = Path(temporary)
             entry = self.entry_for(expected)
             output = self.run_sync(directory, entry, downloaded, exit_expected=1)
-            self.assertFalse(any(output.rglob("*.jsonl")))
+            self.assertFalse(any(path.name.endswith(".jsonl") and path.name != ".relay-losses.jsonl"
+                                 for path in output.rglob("*.jsonl")))
 
 
 if __name__ == "__main__":

@@ -39,6 +39,29 @@ def write_capture(root: Path, start_seconds: float | None = None) -> tuple[Path,
     return path, payload
 
 
+def write_archived_capture(path: Path, start_seconds: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    capture_id = path.name.split("-")[-1].split(".")[0]
+    rows = [
+        {"schema": "td_public_market_capture_record", "version": 1,
+         "record_type": "capture_started", "recorded_at_unix_ns": int(start_seconds * 1e9)},
+        {"schema": "td_public_market_capture_record", "version": 1,
+         "record_type": "capture_stopped", "recorded_at_unix_ns": int((start_seconds + 60) * 1e9)},
+    ]
+    payload = b"".join((json.dumps(row, separators=(",", ":")) + "\n").encode() for row in rows)
+    compressed = zstandard.ZstdCompressor(level=3, write_checksum=True).compress(payload)
+    path.write_bytes(compressed)
+    metadata = {
+        "schema": "td_market_data_archive_metadata_v1", "capture_id": capture_id,
+        "raw_sha256": hashlib.sha256(payload).hexdigest(), "raw_size_bytes": len(payload),
+        "compressed_sha256": hashlib.sha256(compressed).hexdigest(),
+        "compressed_size_bytes": len(compressed),
+        "capture_started_at_ns": int(start_seconds * 1e9),
+        "capture_stopped_at_ns": int((start_seconds + 60) * 1e9),
+    }
+    path.with_name(path.name + ".meta.json").write_text(json.dumps(metadata) + "\n")
+
+
 class QuietRelayHandler(relay.Handler):
     def log_message(self, *_args):
         pass
@@ -116,15 +139,15 @@ class RelayTests(unittest.TestCase):
             base = Path(temporary)
             hot, archive = base / "hot", base / "archive"
             old = archive / "usdm-depth" / "BTCUSDT" / "BTCUSDT-20261031T120000Z-0123456789abcdef0123456789abcdef.jsonl.zst"
-            old.parent.mkdir(parents=True, exist_ok=True)
-            old.write_bytes(b"x" * 450)
+            write_archived_capture(old, time.time() - 3 * 3600)
             metadata = old.with_name(old.name + ".meta.json")
-            metadata.write_text("{}\n")
             old_time = time.time() - 2 * 3600
             os.utime(old, (old_time, old_time))
-            write_capture(hot)
+            _, incoming_raw = write_capture(hot)
+            incoming_size = len(zstandard.ZstdCompressor(level=3, write_checksum=True).compress(incoming_raw))
+            quota = max(old.stat().st_size, incoming_size) + 1
             with patch.object(relay, "HOT", hot), patch.object(relay, "ARCHIVE", archive), \
-                    patch.object(relay, "MAX_ARCHIVE_BYTES", 500):
+                    patch.object(relay, "MAX_ARCHIVE_BYTES", quota):
                 relay.compress_old_captures()
                 losses = relay.capture_losses(0, time.time_ns(), "", "")
             self.assertFalse(old.exists())
@@ -139,15 +162,15 @@ class RelayTests(unittest.TestCase):
             base = Path(temporary)
             hot, archive = base / "hot", base / "archive"
             old = archive / "usdm-depth" / "BTCUSDT" / "BTCUSDT-20261031T120000Z-0123456789abcdef0123456789abcdef.jsonl.zst"
-            old.parent.mkdir(parents=True, exist_ok=True)
-            old.write_bytes(b"x" * 450)
+            write_archived_capture(old, time.time() - 3 * 3600)
             metadata = old.with_name(old.name + ".meta.json")
-            metadata.write_text("{}\n")
             old_time = time.time() - 2 * 3600
             os.utime(old, (old_time, old_time))
-            incoming, _ = write_capture(hot)
+            incoming, incoming_raw = write_capture(hot)
+            incoming_size = len(zstandard.ZstdCompressor(level=3, write_checksum=True).compress(incoming_raw))
+            quota = max(old.stat().st_size, incoming_size) + 1
             with patch.object(relay, "HOT", hot), patch.object(relay, "ARCHIVE", archive), \
-                    patch.object(relay, "MAX_ARCHIVE_BYTES", 500), \
+                    patch.object(relay, "MAX_ARCHIVE_BYTES", quota), \
                     patch.object(relay, "MAX_LOSS_LEDGER_BYTES", 1):
                 relay.compress_old_captures()
             self.assertTrue(old.exists())

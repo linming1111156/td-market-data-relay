@@ -124,11 +124,14 @@ def capture_lifecycle_bounds(path: Path) -> tuple[int, int]:
         return started_ns, stopped_ns
 
     if path.suffix == ".zst":
-        with path.open("rb") as source:
-            with zstandard.ZstdDecompressor().stream_reader(source) as decoded:
-                import io
+        try:
+            with path.open("rb") as source:
+                with zstandard.ZstdDecompressor().stream_reader(source) as decoded:
+                    import io
 
-                return records(io.BufferedReader(decoded))
+                    return records(io.BufferedReader(decoded))
+        except zstandard.ZstdError as error:
+            raise OSError("archived capture has invalid zstd data") from error
     with path.open("rb") as source:
         return records(source)
 
