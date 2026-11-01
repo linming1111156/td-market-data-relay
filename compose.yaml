@@ -11,6 +11,9 @@ x-collector: &collector
   security_opt:
     - no-new-privileges:true
   cap_drop: [ALL]
+  depends_on:
+    volume-init:
+      condition: service_completed_successfully
   environment:
     HOT_ROOT: /var/lib/td-market-data/hot
     SOURCE_HOST_ID: ${SOURCE_HOST_ID:-vps-market-data}
@@ -19,6 +22,28 @@ x-collector: &collector
     - market-data:/var/lib/td-market-data
 
 services:
+  volume-init:
+    image: ghcr.io/linming1111156/td-market-data-relay:${IMAGE_TAG:-manual}
+    mem_limit: 64m
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        install -d -o 10001 -g 10001
+        /var/lib/td-market-data/hot
+        /var/lib/td-market-data/archive
+        /var/lib/td-market-data/state;
+        chown 10001:10001 /var/lib/td-market-data;
+        chown -R 10001:10001 /var/lib/td-market-data/state
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    volumes:
+      - market-data:/var/lib/td-market-data
+
   spot-depth:
     <<: *collector
     command: ["--kind", "spot-depth", "--symbol", "${SPOT_SYMBOL:-BTCUSDT}"]
@@ -62,6 +87,9 @@ services:
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
     env_file: .env
     environment:
       HOT_ROOT: /var/lib/td-market-data/hot
