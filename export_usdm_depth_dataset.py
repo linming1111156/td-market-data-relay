@@ -284,11 +284,14 @@ def publish_dataset(capture: Path, output: Path, symbol: str, start_ns: int, end
                 if hashlib.sha256(raw_frame).hexdigest() != row.get("raw_frame_sha256"):
                     raise CaptureRejected(f"line {line_number}: raw depth frame hash mismatch")
                 if (not isinstance(frame, dict) or frame.get("e") != "depthUpdate"
-                        or frame.get("s") != symbol or frame.get("E") != row.get("event_time_ms")
+                        or frame.get("s") != symbol
                         or frame.get("U") != row.get("first_update_id")
                         or frame.get("u") != row.get("final_update_id")
                         or frame.get("pu") != row.get("previous_final_update_id")):
                     raise CaptureRejected(f"line {line_number}: raw frame update IDs or identity mismatch")
+                if ((row.get("accepted_for_book") is True or row.get("event_time_ms") is not None)
+                        and frame.get("E") != row.get("event_time_ms")):
+                    raise CaptureRejected(f"line {line_number}: raw frame event time disagrees with parsed field")
                 first_id = integer(frame.get("U"), "first update ID", line_number)
                 final_id = integer(frame.get("u"), "final update ID", line_number)
                 event_ms = integer(frame.get("E"), "event time", line_number)
@@ -410,11 +413,6 @@ def publish_dataset(capture: Path, output: Path, symbol: str, start_ns: int, end
     if any(event["event_ts_ms"] * 1_000_000 >= end_ns or event["receive_ts_ms"] * 1_000_000 >= end_ns
            for event in accepted_events):
         raise CaptureRejected("capture has an event outside the Dataset window")
-    if any(event["event_ts_ms"] * 1_000_000 < start_ns and event["receive_ts_ms"] * 1_000_000 >= start_ns
-           for event in accepted_events):
-        # This ordering violation is retained as a hard fail rather than claiming point-in-time readiness.
-        raise CaptureRejected("event time precedes the window while availability is inside it")
-
     # Replay all levels to ensure the snapshot, update chain, and book remain valid.
     bids = {price: decimal(quantity, "snapshot bid quantity") for price, quantity in snapshot["bids"]}
     asks = {price: decimal(quantity, "snapshot ask quantity") for price, quantity in snapshot["asks"]}

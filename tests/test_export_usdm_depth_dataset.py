@@ -18,7 +18,8 @@ def encode(row):
     return (json.dumps(row, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
 
 
-def make_capture(path, add_gap=False):
+def make_capture(path, add_gap=False, *, add_unaccepted_stale=False,
+                 receive_offsets_ns=None):
     raw_snapshot = json.dumps({"lastUpdateId": 100, "bids": [["50000.0", "1.0"]],
                                "asks": [["50001.0", "1.0"]]}, separators=(",", ":"))
     rows = [{"schema": "td_public_market_capture_record", "version": 1,
@@ -37,6 +38,18 @@ def make_capture(path, add_gap=False):
              "raw_snapshot_sha256": hashlib.sha256(raw_snapshot.encode()).hexdigest(),
              "bids": [["50000.0", "1.0"]], "asks": [["50001.0", "1.0"]],
              "session_id": SESSION}]
+    if add_unaccepted_stale:
+        frame = {"e": "depthUpdate", "E": 1_799_999_999_900, "s": SYMBOL,
+                 "U": 98, "u": 99, "pu": 97, "b": [["50000.0", "1.2"]], "a": []}
+        raw = json.dumps(frame, separators=(",", ":"))
+        rows.append({"schema": "td_public_market_capture_record", "version": 1,
+                     "record_type": "market_frame", "session_id": SESSION,
+                     "received_at_unix_ns": 1_800_000_000_100_000_000,
+                     "receive_monotonic_ns": 1_900_000_000,
+                     "raw_frame": raw, "raw_frame_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+                     "event_time_ms": None, "first_update_id": 98, "final_update_id": 99,
+                     "previous_final_update_id": 97, "accepted_for_book": False,
+                     "reject_reason": "older_than_snapshot_or_duplicate"})
     changes = [
         (1_800_000_000_000, 100, 101, 99, [["50000.0", "0.9"]], [["50001.0", "0.8"]]),
         (1_800_000_001_000, 102, 102, 101, [["49999.0", "2.0"]], []),
@@ -48,7 +61,8 @@ def make_capture(path, add_gap=False):
         raw = json.dumps(frame, separators=(",", ":"))
         rows.append({"schema": "td_public_market_capture_record", "version": 1,
                      "record_type": "market_frame", "session_id": SESSION,
-                     "received_at_unix_ns": event_ms * 1_000_000,
+                     "received_at_unix_ns": event_ms * 1_000_000 + (
+                         receive_offsets_ns[i] if receive_offsets_ns else 0),
                      "receive_monotonic_ns": 2_000_000_000 + i * 1_000_000_000,
                      "raw_frame": raw, "raw_frame_sha256": hashlib.sha256(raw.encode()).hexdigest(),
                      "event_time_ms": event_ms, "first_update_id": first,
@@ -57,14 +71,19 @@ def make_capture(path, add_gap=False):
     if add_gap:
         rows.append({"schema": "td_public_market_capture_record", "version": 1,
                      "record_type": "gap_detected", "reason": "fixture gap"})
+    disconnect_ns = (1_800_000_004_050_000_000 if receive_offsets_ns
+                     else 1_800_000_003_000_000_000)
+    stop_ns = disconnect_ns + 100_000_000
     rows.append({"schema": "td_public_market_capture_record", "version": 1,
-                 "record_type": "session_disconnected", "recorded_at_unix_ns": 1_800_000_003_000_000_000,
+                 "record_type": "session_disconnected", "recorded_at_unix_ns": disconnect_ns,
                  "session_id": SESSION, "reason": "hourly_rotation"})
     before_stop = sum(len(encode(row)) for row in rows)
     rows.append({"schema": "td_public_market_capture_record", "version": 1,
-                 "record_type": "capture_stopped", "recorded_at_unix_ns": 1_800_000_003_100_000_000,
-                 "recorded_at_monotonic_ns": 4_100_000_000, "reason": "duration_elapsed",
-                 "observation_count": 3, "bytes_before_stop_record": before_stop})
+                 "record_type": "capture_stopped", "recorded_at_unix_ns": stop_ns,
+                 "recorded_at_monotonic_ns": 5_100_000_000 if receive_offsets_ns else 4_100_000_000,
+                 "reason": "duration_elapsed",
+                 "observation_count": 3 + int(add_unaccepted_stale),
+                 "bytes_before_stop_record": before_stop})
     path.write_bytes(b"".join(encode(row) for row in rows))
 
 
@@ -93,6 +112,21 @@ class UsdmDepthDatasetExportTests(unittest.TestCase):
             with self.assertRaises(CaptureRejected):
                 publish_dataset(capture, output, SYMBOL, START_NS, END_NS)
             self.assertFalse(output.exists())
+
+    def test_keeps_exchange_event_before_window_when_received_after_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture = root / "capture.jsonl"
+            output = root / "dataset"
+            make_capture(capture, add_unaccepted_stale=True,
+                         receive_offsets_ns=(200_000_000, 2_000_000_000, 2_000_000_000))
+            window_start = START_NS + 500_000_000
+            manifest = publish_dataset(capture, output, SYMBOL, window_start, END_NS)
+            events = [json.loads(line) for line in (output / "events.jsonl").read_text().splitlines()]
+            self.assertEqual(manifest["event_count"], 3)
+            self.assertEqual(manifest["warmup_event_count"], 1)
+            self.assertLess(events[1]["event_ts_ns"], window_start)
+            self.assertGreater(events[1]["receive_ts_ns"], window_start)
 
 
 if __name__ == "__main__":
