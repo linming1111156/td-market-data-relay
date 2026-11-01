@@ -296,6 +296,33 @@ implementation; the adapter does not create a second ledger.
 
 ## VPS deployment, when a VPS is available
 
+### Build and publish the container manually
+
+The GitHub Actions workflow `.github/workflows/publish-container.yml` builds
+the Docker image and publishes it to GitHub Container Registry (GHCR). Push the
+workflow to the repository's default branch first. Then, on GitHub, open
+**Actions → Build and publish market-data relay image → Run workflow**, select
+the branch, enter an image tag such as `2026-11-01`, and run it. The image is
+published as `ghcr.io/linming1111156/td-market-data-relay:<tag>`.
+
+You can also trigger it with GitHub CLI:
+
+```sh
+gh workflow run publish-container.yml --ref main -f image_tag=2026-11-01
+gh run watch
+```
+
+The workflow uses the built-in `GITHUB_TOKEN` with `packages: write`; no
+personal access token or repository secret is needed. After its first publish,
+check the package's GHCR visibility in GitHub **Packages** settings before
+pulling it from a VPS. Container package visibility is managed separately from
+the source repository visibility.
+
+After publishing, set `IMAGE_TAG` in the VPS `.env` to the tag you built, then
+run `docker compose pull` and `docker compose up -d --no-build`. For a public
+GHCR package no registry credentials are required; a private package requires
+`docker login ghcr.io` with a token that has `read:packages`.
+
 1. Create a random relay API key and keep it private:
 
    ```sh

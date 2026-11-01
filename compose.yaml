@@ -1,6 +1,7 @@
 name: td-market-data-relay
 
 x-collector: &collector
+  image: ghcr.io/linming1111156/td-market-data-relay:${IMAGE_TAG:-manual}
   build: .
   mem_limit: 512m
   stop_grace_period: 40s
@@ -51,6 +52,7 @@ services:
     command: ["--kind", "usdm-klines-1m", "--symbol", "${USDM_SYMBOL:-BTCUSDT}"]
 
   relay:
+    image: ghcr.io/linming1111156/td-market-data-relay:${IMAGE_TAG:-manual}
     build: .
     mem_limit: 512m
     entrypoint: ["python3", "/app/relay.py"]
