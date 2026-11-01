@@ -64,8 +64,8 @@ def fmt_ns(value: int) -> str:
     ).replace("+00:00", "Z")
 
 
-def write_decoded_capture(compressed: Path, sidecar: Path, destination: Path,
-                          earliest_start_ns: int) -> dict[str, Any]:
+def write_decoded_capture(compressed: Path, sidecar: Path,
+                          destination: Path) -> dict[str, Any]:
     try:
         import zstandard
     except ImportError as error:
@@ -122,8 +122,8 @@ def write_decoded_capture(compressed: Path, sidecar: Path, destination: Path,
     stopped_ns = last.get("recorded_at_unix_ns")
     if not isinstance(started_ns, int) or not isinstance(stopped_ns, int):
         raise RuntimeError(f"capture lifecycle timestamps are invalid: {compressed}")
-    if started_ns > earliest_start_ns or stopped_ns < earliest_start_ns:
-        raise RuntimeError(f"capture does not cover the requested window start: {compressed}")
+    if started_ns >= stopped_ns:
+        raise RuntimeError(f"capture lifecycle timestamps are invalid: {compressed}")
     fatal = {kind: record_types.get(kind, 0) for kind in
              ("gap_detected", "clock_discontinuity", "funding_api_error")
              if record_types.get(kind, 0)}
@@ -143,10 +143,11 @@ def write_decoded_capture(compressed: Path, sidecar: Path, destination: Path,
     }
 
 
-def capture_arguments(paths: dict[str, Path], *streams: str) -> list[str]:
+def capture_arguments(paths: dict[str, list[Path]], *streams: str) -> list[str]:
     arguments: list[str] = []
     for stream in streams:
-        arguments.extend(("--capture", str(paths[stream])))
+        for path in paths[stream]:
+            arguments.extend(("--capture", str(path)))
     return arguments
 
 
@@ -177,7 +178,7 @@ def publish_directory(staging: Path, output: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--capture", action="append", required=True,
-                        metavar="STREAM=PATH", help="one compressed archive for each supported stream")
+                        metavar="STREAM=PATH", help="compressed archive; repeat for USD-M Mark segments")
     parser.add_argument("--start", required=True, type=parse_time, help="RFC3339 UTC dataset start")
     parser.add_argument("--end", required=True, type=parse_time, help="RFC3339 UTC dataset end")
     parser.add_argument("--window", action="append", default=[], metavar="DATASET=START/END",
@@ -190,16 +191,18 @@ def main() -> None:
 
     if args.start >= args.end or args.output.exists():
         raise SystemExit("window must be increasing and output must not already exist")
-    sources: dict[str, Path] = {}
+    sources: dict[str, list[Path]] = {}
     for value in args.capture:
         if "=" not in value:
             raise SystemExit(f"invalid --capture value: {value}")
         stream, raw_path = value.split("=", 1)
-        if stream not in STREAMS or stream in sources:
-            raise SystemExit(f"unsupported or duplicate capture stream: {stream}")
-        sources[stream] = Path(raw_path)
+        if stream not in STREAMS:
+            raise SystemExit(f"unsupported capture stream: {stream}")
+        sources.setdefault(stream, []).append(Path(raw_path))
     if set(sources) != set(STREAMS):
-        raise SystemExit("exactly one compressed capture is required for each of the eight streams")
+        raise SystemExit("at least one compressed capture is required for each of the eight streams")
+    if any(len(paths) > 1 for stream, paths in sources.items() if stream != "usdm-funding-mark"):
+        raise SystemExit("only the USD-M funding-mark stream accepts multiple capture segments")
 
     source_output = (args.source_output or args.output.with_name(args.output.name + "-sources")).resolve()
     if source_output.is_symlink() or (source_output.exists() and not source_output.is_dir()):
@@ -226,39 +229,53 @@ def main() -> None:
         if start_time >= end_time:
             raise SystemExit(f"window for {name} must be increasing")
         windows[name] = (start_time, end_time)
-    earliest_start_ns = min(ns(window[0]) for window in windows.values())
     script_dir = Path(__file__).resolve().parent
     try:
-        raw_paths: dict[str, Path] = {}
-        capture_records: dict[str, Any] = {}
+        raw_paths: dict[str, list[Path]] = {}
+        capture_records: dict[str, list[dict[str, Any]]] = {}
         for stream in STREAMS:
-            if sources[stream].is_symlink():
-                raise RuntimeError(f"capture archive cannot be a symlink: {sources[stream]}")
-            compressed = sources[stream].resolve(strict=True)
-            if not compressed.is_file() or not compressed.name.endswith(".jsonl.zst"):
-                raise RuntimeError(f"capture must be a regular .jsonl.zst archive: {compressed}")
-            sidecar = compressed.with_suffix(compressed.suffix + ".meta.json")
-            if sidecar.is_symlink() or not sidecar.is_file():
-                raise RuntimeError(f"capture metadata must be a regular file: {sidecar}")
-            raw_name = compressed.name.removesuffix(".zst")
-            raw_destination = source_stage / stream / raw_name
-            capture_records[stream] = write_decoded_capture(
-                compressed, sidecar, raw_destination, earliest_start_ns)
-            raw_paths[stream] = raw_destination
+            raw_paths[stream] = []
+            capture_records[stream] = []
+            for archive in sources[stream]:
+                if archive.is_symlink():
+                    raise RuntimeError(f"capture archive cannot be a symlink: {archive}")
+                compressed = archive.resolve(strict=True)
+                if not compressed.is_file() or not compressed.name.endswith(".jsonl.zst"):
+                    raise RuntimeError(f"capture must be a regular .jsonl.zst archive: {compressed}")
+                sidecar = compressed.with_suffix(compressed.suffix + ".meta.json")
+                if sidecar.is_symlink() or not sidecar.is_file():
+                    raise RuntimeError(f"capture metadata must be a regular file: {sidecar}")
+                raw_destination = source_stage / stream / compressed.name.removesuffix(".zst")
+                if raw_destination.exists():
+                    raise RuntimeError(f"duplicate capture filename for {stream}: {compressed.name}")
+                record = write_decoded_capture(compressed, sidecar, raw_destination)
+                raw_paths[stream].append(raw_destination)
+                capture_records[stream].append(record)
 
         # Source paths are embedded in exporter manifests. Publish them at their
         # stable final path before running exporters so those references remain valid.
         if source_output.exists():
             for stream in STREAMS:
-                prior = source_output / stream / raw_paths[stream].name
-                if not prior.is_file() or prior.is_symlink() or sha256_file(prior) != capture_records[stream]["raw_sha256"]:
-                    raise RuntimeError(f"existing decoded source differs from archive: {prior}")
+                for staged, record in zip(raw_paths[stream], capture_records[stream]):
+                    prior = source_output / stream / staged.name
+                    if prior.exists() or prior.is_symlink():
+                        if not prior.is_file() or prior.is_symlink() or sha256_file(prior) != record["raw_sha256"]:
+                            raise RuntimeError(f"existing decoded source differs from archive: {prior}")
+                    else:
+                        prior.parent.mkdir(parents=True, exist_ok=True)
+                        os.link(staged, prior)
+                        dir_fd = os.open(prior.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                        try:
+                            os.fsync(dir_fd)
+                        finally:
+                            os.close(dir_fd)
             shutil.rmtree(source_stage)
         else:
             publish_directory(source_stage, source_output)
-        for stream, record in capture_records.items():
-            record["raw_path"] = str((source_output / stream / Path(record["raw_path"]).name).resolve())
-        raw_paths = {stream: source_output / stream / path.name for stream, path in raw_paths.items()}
+        for stream in STREAMS:
+            for record in capture_records[stream]:
+                record["raw_path"] = str((source_output / stream / Path(record["raw_path"]).name).resolve())
+            raw_paths[stream] = [source_output / stream / path.name for path in raw_paths[stream]]
 
         symbol = args.symbol.upper()
         def bounds(name: str) -> list[str]:
@@ -278,34 +295,45 @@ def main() -> None:
             "usdm-klines-1m": output_stage / "usdm-klines-1m",
         }
         run_export(script_dir / "export_spot_depth_dataset.py",
-                   ["--capture", str(raw_paths["spot-depth"]), "--output", str(outputs["spot-depth"]),
+                   ["--capture", str(raw_paths["spot-depth"][0]), "--output", str(outputs["spot-depth"]),
                     *bounds("spot-depth")])
         run_export(script_dir / "export_spot_klines_dataset.py",
                    capture_arguments(raw_paths, "spot-klines-1m") + ["--market", "SPOT", "--output",
                                                                       str(outputs["spot-klines-1m"]),
                                                                       *bounds("spot-klines-1m")])
         run_export(script_dir / "export_spot_trades_dataset.py",
-                   ["--capture", str(raw_paths["spot-trades"]), "--output", str(outputs["spot-trades"]),
+                   ["--capture", str(raw_paths["spot-trades"][0]), "--output", str(outputs["spot-trades"]),
                     *bounds("spot-trades")])
         run_export(script_dir / "export_usdm_aggtrades_dataset.py",
                    capture_arguments(raw_paths, "usdm-aggtrades") + ["--output", str(outputs["usdm-aggtrades"]),
                                                                      *bounds("usdm-aggtrades")])
         run_export(script_dir / "export_usdm_depth_dataset.py",
-                   ["--capture", str(raw_paths["usdm-depth"]), "--output", str(outputs["usdm-depth"]),
+                   ["--capture", str(raw_paths["usdm-depth"][0]), "--output", str(outputs["usdm-depth"]),
                     *bounds("usdm-depth")])
         run_export(script_dir / "export_usdm_klines_dataset.py",
                    capture_arguments(raw_paths, "usdm-klines-1m") + ["--output", str(outputs["usdm-klines-1m"]),
                                                                      *bounds("usdm-klines-1m")])
-        run_export(script_dir / "export_funding_capture.py",
-                   ["--capture", str(raw_paths["usdm-funding-mark"]), "--output",
-                    str(outputs["usdm-funding-mark"])])
+        mark_evidence_paths = []
+        for index, path in enumerate(raw_paths["usdm-funding-mark"], 1):
+            evidence_path = output_stage / f"usdm-funding-mark-evidence-{index:02}.jsonl"
+            run_export(script_dir / "export_funding_capture.py",
+                       ["--capture", str(path), "--output", str(evidence_path)])
+            mark_evidence_paths.append(evidence_path)
+        outputs["usdm-funding-mark"] = mark_evidence_paths
+        mark_arguments = [argument for path in raw_paths["usdm-funding-mark"]
+                          for argument in ("--mark-capture", str(path))]
         run_export(script_dir / "export_usdm_funding_dataset.py",
-                   ["--mark-capture", str(raw_paths["usdm-funding-mark"]), "--funding-capture",
-                    str(raw_paths["usdm-finalized-funding"]), "--output",
+                   [*mark_arguments, "--funding-capture", str(raw_paths["usdm-finalized-funding"][0]), "--output",
                     str(outputs["usdm-finalized-funding"]), *bounds("usdm-finalized-funding")])
 
         dataset_manifests = {}
         for name, path in outputs.items():
+            if isinstance(path, list):
+                dataset_manifests[name] = {
+                    "evidence": [{"evidence_sha256": sha256_file(item),
+                                  "evidence_bytes": item.stat().st_size} for item in path],
+                }
+                continue
             manifest_path = path / "manifest.json" if path.is_dir() else None
             if manifest_path is not None and manifest_path.is_file():
                 dataset_manifests[name] = {
