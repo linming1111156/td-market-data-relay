@@ -65,7 +65,7 @@ def fmt_ns(value: int) -> str:
 
 
 def write_decoded_capture(compressed: Path, sidecar: Path, destination: Path,
-                          start_ns: int, end_ns: int) -> dict[str, Any]:
+                          earliest_start_ns: int) -> dict[str, Any]:
     try:
         import zstandard
     except ImportError as error:
@@ -122,7 +122,7 @@ def write_decoded_capture(compressed: Path, sidecar: Path, destination: Path,
     stopped_ns = last.get("recorded_at_unix_ns")
     if not isinstance(started_ns, int) or not isinstance(stopped_ns, int):
         raise RuntimeError(f"capture lifecycle timestamps are invalid: {compressed}")
-    if started_ns > start_ns or stopped_ns < start_ns:
+    if started_ns > earliest_start_ns or stopped_ns < earliest_start_ns:
         raise RuntimeError(f"capture does not cover the requested window start: {compressed}")
     fatal = {kind: record_types.get(kind, 0) for kind in
              ("gap_detected", "clock_discontinuity", "funding_api_error")
@@ -180,6 +180,8 @@ def main() -> None:
                         metavar="STREAM=PATH", help="one compressed archive for each supported stream")
     parser.add_argument("--start", required=True, type=parse_time, help="RFC3339 UTC dataset start")
     parser.add_argument("--end", required=True, type=parse_time, help="RFC3339 UTC dataset end")
+    parser.add_argument("--window", action="append", default=[], metavar="DATASET=START/END",
+                        help="override the default window for a Dataset; repeat as needed")
     parser.add_argument("--output", required=True, type=Path, help="create-only Dataset cohort directory")
     parser.add_argument("--source-output", type=Path,
                         help="stable decoded raw sources (default: OUTPUT-sources)")
@@ -209,7 +211,22 @@ def main() -> None:
     output_stage = Path(tempfile.mkdtemp(prefix=f".{args.output.name}.staging-",
                                          dir=args.output.parent))
     # Exporters publish their own child directories create-only.
-    start_ns, end_ns = ns(args.start), ns(args.end)
+    default_window = (args.start, args.end)
+    dataset_names = ("spot-depth", "spot-klines-1m", "spot-trades", "usdm-aggtrades",
+                     "usdm-depth", "usdm-finalized-funding", "usdm-klines-1m")
+    windows = {name: default_window for name in dataset_names}
+    for value in args.window:
+        if "=" not in value:
+            raise SystemExit(f"invalid --window value: {value}")
+        name, bounds = value.split("=", 1)
+        if name not in windows or "/" not in bounds:
+            raise SystemExit(f"unknown Dataset or invalid --window value: {value}")
+        start_text, end_text = bounds.split("/", 1)
+        start_time, end_time = parse_time(start_text), parse_time(end_text)
+        if start_time >= end_time:
+            raise SystemExit(f"window for {name} must be increasing")
+        windows[name] = (start_time, end_time)
+    earliest_start_ns = min(ns(window[0]) for window in windows.values())
     script_dir = Path(__file__).resolve().parent
     try:
         raw_paths: dict[str, Path] = {}
@@ -226,7 +243,7 @@ def main() -> None:
             raw_name = compressed.name.removesuffix(".zst")
             raw_destination = source_stage / stream / raw_name
             capture_records[stream] = write_decoded_capture(
-                compressed, sidecar, raw_destination, start_ns, end_ns)
+                compressed, sidecar, raw_destination, earliest_start_ns)
             raw_paths[stream] = raw_destination
 
         # Source paths are embedded in exporter manifests. Publish them at their
@@ -244,8 +261,12 @@ def main() -> None:
         raw_paths = {stream: source_output / stream / path.name for stream, path in raw_paths.items()}
 
         symbol = args.symbol.upper()
-        bounds = ["--symbol", symbol, "--start", args.start.isoformat().replace("+00:00", "Z"),
-                  "--end", args.end.isoformat().replace("+00:00", "Z")]
+        def bounds(name: str) -> list[str]:
+            window_start, window_end = windows[name]
+            return ["--symbol", symbol,
+                    "--start", window_start.isoformat().replace("+00:00", "Z"),
+                    "--end", window_end.isoformat().replace("+00:00", "Z")]
+
         outputs = {
             "spot-depth": output_stage / "spot-depth",
             "spot-klines-1m": output_stage / "spot-klines-1m",
@@ -257,25 +278,31 @@ def main() -> None:
             "usdm-klines-1m": output_stage / "usdm-klines-1m",
         }
         run_export(script_dir / "export_spot_depth_dataset.py",
-                   ["--capture", str(raw_paths["spot-depth"]), "--output", str(outputs["spot-depth"]), *bounds])
+                   ["--capture", str(raw_paths["spot-depth"]), "--output", str(outputs["spot-depth"]),
+                    *bounds("spot-depth")])
         run_export(script_dir / "export_spot_klines_dataset.py",
                    capture_arguments(raw_paths, "spot-klines-1m") + ["--market", "SPOT", "--output",
-                                                                      str(outputs["spot-klines-1m"]), *bounds])
+                                                                      str(outputs["spot-klines-1m"]),
+                                                                      *bounds("spot-klines-1m")])
         run_export(script_dir / "export_spot_trades_dataset.py",
-                   ["--capture", str(raw_paths["spot-trades"]), "--output", str(outputs["spot-trades"]), *bounds])
+                   ["--capture", str(raw_paths["spot-trades"]), "--output", str(outputs["spot-trades"]),
+                    *bounds("spot-trades")])
         run_export(script_dir / "export_usdm_aggtrades_dataset.py",
-                   capture_arguments(raw_paths, "usdm-aggtrades") + ["--output", str(outputs["usdm-aggtrades"]), *bounds])
+                   capture_arguments(raw_paths, "usdm-aggtrades") + ["--output", str(outputs["usdm-aggtrades"]),
+                                                                     *bounds("usdm-aggtrades")])
         run_export(script_dir / "export_usdm_depth_dataset.py",
-                   ["--capture", str(raw_paths["usdm-depth"]), "--output", str(outputs["usdm-depth"]), *bounds])
+                   ["--capture", str(raw_paths["usdm-depth"]), "--output", str(outputs["usdm-depth"]),
+                    *bounds("usdm-depth")])
         run_export(script_dir / "export_usdm_klines_dataset.py",
-                   capture_arguments(raw_paths, "usdm-klines-1m") + ["--output", str(outputs["usdm-klines-1m"]), *bounds])
+                   capture_arguments(raw_paths, "usdm-klines-1m") + ["--output", str(outputs["usdm-klines-1m"]),
+                                                                     *bounds("usdm-klines-1m")])
         run_export(script_dir / "export_funding_capture.py",
                    ["--capture", str(raw_paths["usdm-funding-mark"]), "--output",
                     str(outputs["usdm-funding-mark"])])
         run_export(script_dir / "export_usdm_funding_dataset.py",
                    ["--mark-capture", str(raw_paths["usdm-funding-mark"]), "--funding-capture",
                     str(raw_paths["usdm-finalized-funding"]), "--output",
-                    str(outputs["usdm-finalized-funding"]), *bounds])
+                    str(outputs["usdm-finalized-funding"]), *bounds("usdm-finalized-funding")])
 
         dataset_manifests = {}
         for name, path in outputs.items():
@@ -295,14 +322,24 @@ def main() -> None:
                                                text=True, stderr=subprocess.DEVNULL).strip()
         except (OSError, subprocess.CalledProcessError):
             revision = None
+        published_windows = [entry["manifest"]["window"] for entry in dataset_manifests.values()
+                             if "manifest" in entry and isinstance(entry["manifest"].get("window"), dict)
+                             and isinstance(entry["manifest"]["window"].get("start_ns"), int)
+                             and isinstance(entry["manifest"]["window"].get("end_ns"), int)]
+        common_start_ns = max((window["start_ns"] for window in published_windows), default=None)
+        common_end_ns = min((window["end_ns"] for window in published_windows), default=None)
+        common_window = None
+        if common_start_ns is not None and common_end_ns is not None and common_start_ns < common_end_ns:
+            common_window = {"start_ns": common_start_ns, "end_ns": common_end_ns,
+                             "start": fmt_ns(common_start_ns), "end": fmt_ns(common_end_ns)}
         cohort = {
             "schema": SCHEMA,
             "version": 1,
             "exchange": "BINANCE",
             "symbol": symbol,
-            "window": {"start": args.start.isoformat().replace("+00:00", "Z"),
-                       "end": args.end.isoformat().replace("+00:00", "Z"),
-                       "start_unix_ns": start_ns, "end_unix_ns": end_ns},
+            "default_window": {"start": args.start.isoformat().replace("+00:00", "Z"),
+                               "end": args.end.isoformat().replace("+00:00", "Z")},
+            "common_dataset_window": common_window,
             "source_revision": revision,
             "sources": capture_records,
             "datasets": dataset_manifests,
