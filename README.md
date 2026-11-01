@@ -308,8 +308,12 @@ published as `ghcr.io/linming1111156/td-market-data-relay:<tag>`.
 You can also trigger it with GitHub CLI:
 
 ```sh
-gh workflow run publish-container.yml --ref main -f image_tag=2026-11-01
-gh run watch
+gh workflow run publish-container.yml \
+  --repo linming1111156/td-market-data-relay \
+  --ref main -f image_tag=2026-11-01
+gh run list --repo linming1111156/td-market-data-relay \
+  --workflow publish-container.yml
+gh run watch <run-id> --repo linming1111156/td-market-data-relay
 ```
 
 The workflow uses the built-in `GITHUB_TOKEN` with `packages: write`; no
