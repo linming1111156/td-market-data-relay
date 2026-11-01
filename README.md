@@ -273,6 +273,27 @@ trading-futures-depth-account-replay \
 immutable inputs and checks the saved report. Restored depth Datasets also
 need the project's verified reconciliation selection manifest.
 
+To perform both actions and record a content inventory of the inputs, invoke
+the existing read-only replay binary through the Python adapter:
+
+```sh
+python3 run_verified_usdm_replay.py \
+  --replay-executable /mnt/data/td-gateway-target/debug/trading-futures-depth-account-replay \
+  --depth /data/td-futures-depth-datasets/BTCUSDT/window-001 \
+  --mark /data/td-futures-mark-datasets/BTCUSDT/window-001 \
+  --funding /data/td-futures-funding-datasets/BTCUSDT/window-001 \
+  --config /data/research/account-replay-config.json \
+  --orders /data/research/target-position-orders.json \
+  --report /data/research/comparison-report.json \
+  --evidence /data/research/comparison-evidence.json
+```
+
+The adapter reruns `--verify-report`, rejects input changes during execution,
+and writes a create-only evidence file binding the Dataset file inventories,
+config, orders, executable, report, and comparison fingerprint. All fills,
+account accounting, Funding, and baselines remain in the existing replay
+implementation; the adapter does not create a second ledger.
+
 ## VPS deployment, when a VPS is available
 
 1. Create a random relay API key and keep it private:
