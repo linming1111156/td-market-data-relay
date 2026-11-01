@@ -339,7 +339,17 @@ GHCR package no registry credentials are required; a private package requires
 3. In Cloudflare Zero Trust, route the chosen public hostname through this
    tunnel to `http://relay:8080`. Do not publish the relay container port on the
    VPS host. API paths other than `/healthz` require the bearer key.
-4. Build and start the stack with `docker compose -f compose.yaml up -d --build`.
+4. From the repository directory, validate the expanded configuration, pull
+   the selected published image, and start without rebuilding on the VPS:
+
+   ```sh
+   docker compose -f compose.yaml config --quiet
+   docker compose -f compose.yaml pull
+   docker compose -f compose.yaml up -d --no-build
+   ```
+
+   For a development machine building from source, use
+   `docker compose -f compose.yaml up -d --build` instead.
 
 The tunnel is outbound from Docker, so the VPS does not need an inbound public
 IPv4 port. Cloudflare Access/rate limits should also be set for the hostname;
