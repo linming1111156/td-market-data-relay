@@ -408,16 +408,27 @@ async def receive_depth_session(
             while time.monotonic() < stop_at and not shutdown.is_set():
                 if receiver_error:
                     raise ConnectionError(f"depth receive queue overflow: {receiver_error[0]}")
-                remaining = min(max_gap_ms / 1000, max(0.05, stop_at - time.monotonic()))
+                stop_remaining = stop_at - time.monotonic()
+                gap_remaining_ns = max_gap_ms * 1_000_000 - (time.monotonic_ns() - last_receive_mono)
+                if gap_remaining_ns <= 0:
+                    gap_ns = time.monotonic_ns() - last_receive_mono
+                    capture.gap("websocket_receive_timeout", receive_gap_ns=gap_ns,
+                                max_gap_ms=max_gap_ms, session_id=session_id)
+                    raise ConnectionError("depth WebSocket receive gap exceeded configured limit")
+                remaining = min(stop_remaining, gap_remaining_ns / 1_000_000_000)
                 try:
-                    received_ns, monotonic_ns, raw = await asyncio.wait_for(queue.get(), min(remaining, 1.0))
+                    received_ns, monotonic_ns, raw = await asyncio.wait_for(
+                        queue.get(), min(remaining, 1.0)
+                    )
                 except asyncio.TimeoutError:
                     if shutdown.is_set() or time.monotonic() >= stop_at:
                         break
-                    if remaining > 1.0:
-                        continue
-                    capture.gap("websocket_receive_timeout", max_gap_ms=max_gap_ms, session_id=session_id)
-                    raise ConnectionError("depth WebSocket receive gap exceeded configured limit")
+                    gap_ns = time.monotonic_ns() - last_receive_mono
+                    if gap_ns >= max_gap_ms * 1_000_000:
+                        capture.gap("websocket_receive_timeout", receive_gap_ns=gap_ns,
+                                    max_gap_ms=max_gap_ms, session_id=session_id)
+                        raise ConnectionError("depth WebSocket receive gap exceeded configured limit")
+                    continue
                 delay_ns = monotonic_ns - last_receive_mono
                 if delay_ns > max_gap_ms * 1_000_000:
                     capture.gap("receive_gap_exceeded", receive_gap_ns=delay_ns, session_id=session_id)
@@ -502,16 +513,25 @@ async def receive_observation_session(
         capture.record("session_connected", recorded_at_unix_ns=now_ns(), session_id=session_id, url=url)
         last_receive_mono = time.monotonic_ns()
         while time.monotonic() < stop_at and not shutdown.is_set():
-            remaining = min(max_gap_ms / 1000, max(0.05, stop_at - time.monotonic()))
+            stop_remaining = stop_at - time.monotonic()
+            gap_remaining_ns = max_gap_ms * 1_000_000 - (time.monotonic_ns() - last_receive_mono)
+            if gap_remaining_ns <= 0:
+                gap_ns = time.monotonic_ns() - last_receive_mono
+                capture.gap("websocket_receive_timeout", receive_gap_ns=gap_ns,
+                            max_gap_ms=max_gap_ms, session_id=session_id)
+                raise ConnectionError("observation WebSocket receive gap exceeded configured limit")
+            remaining = min(stop_remaining, gap_remaining_ns / 1_000_000_000)
             try:
                 raw = await asyncio.wait_for(websocket.recv(), min(remaining, 1.0))
             except asyncio.TimeoutError:
                 if shutdown.is_set() or time.monotonic() >= stop_at:
                     break
-                if remaining > 1.0:
-                    continue
-                capture.gap("websocket_receive_timeout", max_gap_ms=max_gap_ms, session_id=session_id)
-                raise ConnectionError("observation WebSocket receive gap exceeded configured limit")
+                gap_ns = time.monotonic_ns() - last_receive_mono
+                if gap_ns >= max_gap_ms * 1_000_000:
+                    capture.gap("websocket_receive_timeout", receive_gap_ns=gap_ns,
+                                max_gap_ms=max_gap_ms, session_id=session_id)
+                    raise ConnectionError("observation WebSocket receive gap exceeded configured limit")
+                continue
             received_ns = now_ns()
             monotonic_ns = time.monotonic_ns()
             delay_ns = monotonic_ns - last_receive_mono
