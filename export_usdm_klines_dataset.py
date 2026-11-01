@@ -100,7 +100,7 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
     expected_bars = (end_ms - start_ms) // BAR_MS
     if expected_bars <= 0 or expected_bars > MAX_BARS:
         raise KlinesRejected("window bar count exceeds configured bound")
-    logical = hashlib.sha256(f"td-market-data-{market.lower()}-klines-1m-v1\0".encode() + canonical({
+    logical = hashlib.sha256(f"td-market-data-{market.lower()}-klines-1m-v2\0".encode() + canonical({
         "symbol": symbol, "start_ns": start_ns, "end_ns": end_ns}))
     events_hash = hashlib.sha256()
     event_count = event_bytes = frame_count = 0
@@ -215,8 +215,10 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
                         if is_closed:
                             if previous_closed_open_ms is not None and open_ms != previous_closed_open_ms + BAR_MS:
                                 raise KlinesRejected(f"{capture}:{line_number}: finalized minute gap")
-                            if received_ns < (close_ms + 1) * 1_000_000:
-                                raise KlinesRejected(f"{capture}:{line_number}: finalized candle available before close")
+                            event_ns = event_ms * 1_000_000
+                            if event_ns < (close_ms + 1) * 1_000_000:
+                                raise KlinesRejected(f"{capture}:{line_number}: finalized exchange event precedes candle close")
+                            available_ns = max(received_ns, event_ns)
                             values = {key: dec(bar.get(key), key, line_number,
                                                positive=key in {"o", "c", "h", "l"})[0]
                                       for key in ("o", "h", "l", "c", "v", "q", "V", "Q")}
@@ -235,7 +237,7 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
                             normalized = {"record_type": "finalized_kline", "symbol": symbol,
                                           "interval": "1m", "open_time_ms": open_ms,
                                           "close_time_ms": close_ms, "exchange_event_time_ms": event_ms,
-                                          "available_at_ns": received_ns,
+                                          "received_at_ns": received_ns, "available_at_ns": available_ns,
                                           "open": values["o"], "high": values["h"], "low": values["l"],
                                           "close": values["c"], "base_volume": values["v"],
                                           "quote_volume": values["q"], "taker_buy_base_volume": values["V"],
@@ -302,7 +304,7 @@ def _publish(captures: list[Path], output: Path, parent: Path, stage: Path,
     if chain_start_ns is None or chain_stop_ns is None or chain_start_ns > start_ns or chain_stop_ns < end_ns:
         raise KlinesRejected("capture lifecycle does not cover requested window")
     builder = source_revision()
-    manifest = {"schema": f"td_market_data_{market.lower()}_klines_dataset", "version": 1,
+    manifest = {"schema": f"td_market_data_{market.lower()}_klines_dataset", "version": 2,
                 "exchange": "BINANCE", "market": market, "symbol": symbol, "interval": "1m",
                 "window": {"start_ns": start_ns, "end_ns": end_ns}, "event_count": event_count,
                 "first_open_time_ms": first_inside["open_time_ms"],

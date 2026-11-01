@@ -209,6 +209,12 @@ python3 verify_spot_klines_dataset.py \
   --dataset /data/td-market-data-spot-klines/BTCUSDT-window-001
 ```
 
+Kline Dataset version 2 preserves `received_at_ns` separately and defines
+`available_at_ns` as the later of the local receive time and exchange event
+time. This keeps point-in-time availability conservative when the local wall
+clock is slightly behind the exchange clock. The verifier continues to accept
+version 1 Kline Datasets with their original timestamp semantics.
+
 The trade Dataset is provenance-bound and immutable. It currently supports
 future market-flow research; the execution simulator below consumes the Spot
 depth Dataset.

@@ -55,11 +55,12 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
         manifest = json.loads(manifest_path.read_bytes())
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise DatasetRejected("manifest.json is invalid") from error
-    if (not isinstance(manifest, dict) or manifest.get("version") != 1 or manifest.get("exchange") != "BINANCE"
+    if (not isinstance(manifest, dict) or manifest.get("version") not in {1, 2} or manifest.get("exchange") != "BINANCE"
             or manifest.get("market") not in {"SPOT", "USD_M"} or manifest.get("interval") != "1m"
             or manifest.get("events_file") != "events.jsonl"):
         raise DatasetRejected("unsupported Spot/USD-M Kline Dataset manifest")
     market = manifest["market"]
+    version = manifest["version"]
     if manifest.get("schema") != f"td_market_data_{market.lower()}_klines_dataset":
         raise DatasetRejected("Kline market/schema mismatch")
     symbol = manifest.get("symbol")
@@ -73,7 +74,7 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
     if start_ns >= end_ns or start_ns % (BAR_MS * 1_000_000) or end_ns % (BAR_MS * 1_000_000):
         raise DatasetRejected("manifest window invalid")
     expected_count = (end_ns - start_ns) // (BAR_MS * 1_000_000)
-    logical = hashlib.sha256(f"td-market-data-{market.lower()}-klines-1m-v1\0".encode() + canonical({
+    logical = hashlib.sha256(f"td-market-data-{market.lower()}-klines-1m-v{version}\0".encode() + canonical({
         "symbol": symbol, "start_ns": start_ns, "end_ns": end_ns}))
     event_hash = hashlib.sha256()
     rows: list[dict[str, Any]] = []
@@ -91,9 +92,20 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
             close_ms = uint(event.get("close_time_ms"), "close time")
             event_ms = uint(event.get("exchange_event_time_ms"), "exchange event time")
             available_ns = uint(event.get("available_at_ns"), "availability time")
-            if (close_ms != open_ms + BAR_MS - 1 or start_ns // 1_000_000 <= open_ms < end_ns // 1_000_000
+            if version == 2:
+                received_ns = uint(event.get("received_at_ns"), "receive time")
+                invalid_availability = (
+                    available_ns != max(received_ns, event_ms * 1_000_000)
+                    or event_ms * 1_000_000 < (close_ms + 1) * 1_000_000
+                    or event_ms * 1_000_000 > received_ns + 2_000_000_000
+                )
+            else:
+                received_ns = available_ns
+                invalid_availability = (
+                    start_ns // 1_000_000 <= open_ms < end_ns // 1_000_000
                     and available_ns < (close_ms + 1) * 1_000_000
-                    or event_ms * 1_000_000 > available_ns + 2_000_000_000):
+                ) or event_ms * 1_000_000 > available_ns + 2_000_000_000
+            if close_ms != open_ms + BAR_MS - 1 or invalid_availability:
                 raise DatasetRejected(f"events.jsonl line {number} invalid time fields")
             prices: dict[str, Decimal] = {}
             for key in ("open", "high", "low", "close"):
@@ -143,7 +155,8 @@ def verify_dataset(dataset: Path, source_captures: list[Path] | None = None) -> 
             or manifest.get("last_available_at_ns") != rows[-1]["available_at_ns"]):
         raise DatasetRejected("manifest event boundaries mismatch")
     if len(rows) > 1:
-        max_gap = max((right["available_at_ns"] - left["available_at_ns"]) // 1_000_000
+        max_gap = max(((right.get("received_at_ns", right["available_at_ns"])
+                        - left.get("received_at_ns", left["available_at_ns"])) // 1_000_000)
                       for left, right in zip(rows, rows[1:]))
     else:
         max_gap = 0
