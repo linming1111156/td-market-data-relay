@@ -31,7 +31,11 @@ def continuous_scan_start(now_ns: int, since_ns: int) -> int:
 
 
 def request(url: str, api_key: str, timeout: int = 60):
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {api_key}",
+                 "User-Agent": "td-market-data-sync/1.0"},
+    )
     return urllib.request.urlopen(req, timeout=timeout)
 
 

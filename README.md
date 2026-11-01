@@ -427,7 +427,9 @@ left untouched. The output root can be the existing local capture root when its
 `stream/symbol/file.jsonl` layout matches; alternatively, keep it in a separate
 recovery root and let Dataset exporters read both roots. Restored files retain
 their original capture identities and are never merged into or substituted for
-another capture.
+another capture. Relay requests identify the client as `td-market-data-sync`
+so Cloudflare's browser-integrity checks do not mistake Python's default
+User-Agent for an unrecognized browser.
 
 For a long-running local recovery worker, set `TD_RELAY_BASE_URL` and
 `TD_RELAY_API_KEY`, then add `--continuous --poll-seconds 300 --state-file
