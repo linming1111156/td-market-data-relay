@@ -122,7 +122,7 @@ def write_decoded_capture(compressed: Path, sidecar: Path, destination: Path,
     stopped_ns = last.get("recorded_at_unix_ns")
     if not isinstance(started_ns, int) or not isinstance(stopped_ns, int):
         raise RuntimeError(f"capture lifecycle timestamps are invalid: {compressed}")
-    if started_ns > start_ns or stopped_ns <= end_ns:
+    if started_ns > start_ns or stopped_ns >= end_ns:
         raise RuntimeError(f"capture does not fully bracket requested window: {compressed}")
     fatal = {kind: record_types.get(kind, 0) for kind in
              ("gap_detected", "clock_discontinuity", "funding_api_error")
