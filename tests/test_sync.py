@@ -11,6 +11,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import zstandard
 import sync
 from collector import SUPPORTED_STREAMS as COLLECTOR_SUPPORTED_STREAMS
 
@@ -104,7 +105,7 @@ class SyncTests(unittest.TestCase):
                     self.assertEqual(len(list((output / stream / "BTCUSDT").glob("*.jsonl"))), 1)
 
     def run_sync(self, directory: Path, entry: dict, payload: bytes, exit_expected=0,
-                 losses: list[dict] | None = None):
+                 losses: list[dict] | None = None, archive_root: Path | None = None):
         RelayHandler.index_body = json.dumps({
             "schema": "td_market_data_relay_index_v1", "captures": [entry], "losses": losses or [],
         }).encode()
@@ -116,6 +117,8 @@ class SyncTests(unittest.TestCase):
         env = {"TD_RELAY_API_KEY": "x" * 64}
         args = ["sync.py", "--base-url", f"http://127.0.0.1:{server.server_port}",
                 "--output", str(output)]
+        if archive_root is not None:
+            args.extend(["--archive-root", str(archive_root)])
         try:
             with patch.dict(os.environ, env), patch.object(sys, "argv", args), redirect_stdout(StringIO()):
                 if exit_expected == 0:
@@ -128,6 +131,38 @@ class SyncTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
         return output
+
+    def test_skips_verified_capture_already_in_local_relay_archive(self):
+        payload = b'{"record_type":"capture_stopped"}\n'
+        entry = self.entry_for(payload)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            archive_root = directory / "archive"
+            remote_compressed = zstandard.ZstdCompressor().compress(payload)
+            entry["path"] += ".zst"
+            entry["compressed"] = True
+            entry["size_bytes"] = len(remote_compressed)
+            entry["sha256"] = hashlib.sha256(remote_compressed).hexdigest()
+            archive_path = (archive_root / "spot-depth" / "BTCUSDT"
+                            / Path(entry["path"]).name)
+            archive_path.parent.mkdir(parents=True)
+            compressed = zstandard.ZstdCompressor().compress(payload)
+            archive_path.write_bytes(compressed)
+            metadata = {
+                "schema": "td_market_data_archive_metadata_v1",
+                "capture_id": entry["id"],
+                "raw_sha256": entry["raw_sha256"],
+                "raw_size_bytes": len(payload),
+                "compressed_sha256": hashlib.sha256(compressed).hexdigest(),
+                "compressed_size_bytes": len(compressed),
+            }
+            archive_path.with_name(archive_path.name + ".meta.json").write_text(
+                json.dumps(metadata)
+            )
+            output = self.run_sync(
+                directory, entry, b"unexpected remote download", archive_root=archive_root
+            )
+            self.assertFalse((output / Path(entry["path"]).with_suffix("")).exists())
 
     def entry_for(self, payload: bytes, path: str | None = None, stream: str = "spot-depth") -> dict:
         filename = "BTCUSDT-20261031T120000Z-0123456789abcdef0123456789abcdef.jsonl"

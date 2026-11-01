@@ -2,18 +2,18 @@
 Description=Continuously restore verified public market capture files from TD relay
 Wants=network-online.target
 After=network-online.target
+RequiresMountsFor=/mnt/data/td-market-data-local
 
 [Service]
 Type=simple
-User=td-market-data-sync
-Group=td-market-data-sync
+User=td-marketdata
+Group=td-marketdata
 WorkingDirectory=/opt/td-market-data-relay
 EnvironmentFile=/etc/td-market-data-relay/sync.env
-StateDirectory=td-market-data-recovered
-StateDirectoryMode=0750
-ExecStart=/opt/td-market-data-relay/.venv/bin/python3 /opt/td-market-data-relay/sync.py --output /var/lib/td-market-data-recovered --continuous --poll-seconds 300 --state-file /var/lib/td-market-data-recovered/cursor.json
+ExecStart=/opt/td-market-data-relay/.venv/bin/python3 /opt/td-market-data-relay/sync.py --output /mnt/data/td-market-data-local/hot --archive-root /mnt/data/td-market-data-local/archive --continuous --poll-seconds 300 --state-file /mnt/data/td-market-data-local/state/vps-sync-cursor.json
 Restart=always
 RestartSec=30s
+UMask=0027
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
@@ -22,7 +22,7 @@ ProtectKernelTunables=true
 ProtectControlGroups=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/var/lib/td-market-data-recovered
+ReadWritePaths=/mnt/data/td-market-data-local
 MemoryMax=256M
 
 [Install]

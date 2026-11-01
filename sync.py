@@ -66,6 +66,31 @@ def capture_is_closed(path: Path) -> bool:
     return isinstance(last_record, dict) and last_record.get("record_type") == "capture_stopped"
 
 
+def archived_capture_matches(path: Path, entry: dict) -> bool:
+    """Check whether the local relay archive already holds this raw capture."""
+    metadata_path = path.with_name(path.name + ".meta.json")
+    if not path.exists() and not path.is_symlink():
+        if metadata_path.exists() or metadata_path.is_symlink():
+            raise RuntimeError(f"orphaned local archive metadata; left untouched: {metadata_path}")
+        return False
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(f"local archive is not a regular file; left untouched: {path}")
+    if metadata_path.is_symlink() or not metadata_path.is_file():
+        raise RuntimeError(f"local archive metadata is missing or unsafe; left untouched: {metadata_path}")
+    try:
+        metadata = json.loads(metadata_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"local archive metadata is invalid; left untouched: {metadata_path}") from error
+    expected_id = str(entry["id"])
+    if (metadata.get("schema") != "td_market_data_archive_metadata_v1"
+            or metadata.get("capture_id") != expected_id
+            or metadata.get("compressed_size_bytes") != path.stat().st_size
+            or re.fullmatch(r"[0-9a-f]{64}", str(metadata.get("compressed_sha256", ""))) is None
+            or metadata.get("raw_sha256") != entry["raw_sha256"]):
+        raise RuntimeError(f"local archive differs from relay copy; left untouched: {path}")
+    return True
+
+
 def remove_abandoned_temp(path: Path) -> None:
     if not path.exists() and not path.is_symlink():
         return
@@ -168,6 +193,8 @@ def main() -> None:
     parser.add_argument("--base-url", default=os.environ.get("TD_RELAY_BASE_URL"),
                         help="Cloudflare Tunnel URL for the relay (or TD_RELAY_BASE_URL)")
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--archive-root", type=Path,
+                        help="local relay archive root used to avoid re-downloading archived captures")
     parser.add_argument("--since-ns", type=int, default=0, help="Only captures modified since this Unix nanosecond time")
     parser.add_argument("--stream", default="", help="Optional stream filter")
     parser.add_argument("--symbol", default="", help="Optional symbol filter")
@@ -188,6 +215,8 @@ def main() -> None:
         raise SystemExit("relay base URL must use HTTPS (HTTP is allowed only for localhost)")
     if args.continuous and (args.state_file is None or args.poll_seconds < 30):
         raise SystemExit("continuous mode requires --state-file and --poll-seconds >= 30")
+    if args.archive_root is not None and (args.archive_root.is_symlink() or not args.archive_root.is_dir()):
+        raise SystemExit("--archive-root must be an existing local relay archive directory")
     args.output.mkdir(parents=True, exist_ok=True)
 
     def restore_since(since_ns: int) -> None:
@@ -227,7 +256,8 @@ def main() -> None:
                 raise RuntimeError("relay returned an invalid or unsafe capture manifest")
             if bool(entry["compressed"]) != filename.endswith(".zst"):
                 raise RuntimeError("relay compression flag disagrees with capture path")
-            target = args.output / stream_name / symbol / filename.removesuffix(".zst")
+            raw_filename = filename.removesuffix(".zst")
+            target = args.output / stream_name / symbol / raw_filename
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
                 if digest(target) == entry["raw_sha256"]:
@@ -238,6 +268,11 @@ def main() -> None:
                         print(f"deferred incomplete remote capture: {stream_name}/{symbol}/{filename}", flush=True)
                     continue
                 raise RuntimeError(f"local capture differs from relay copy; left untouched: {target}")
+            if args.archive_root is not None:
+                archive_path = args.archive_root / stream_name / symbol / f"{raw_filename}.zst"
+                if archived_capture_matches(archive_path, entry):
+                    skipped += 1
+                    continue
             temp = target.with_name(target.name + f".download-{os.getpid()}")
             remove_abandoned_temp(temp)
             route = "/v1/captures/" + urllib.parse.quote(str(entry["id"]), safe="")
@@ -288,10 +323,10 @@ def main() -> None:
                         continue
                     publish_without_overwrite(temp, target)
                 restored += 1
-                print(f"restored {stream_name}/{symbol}/{target.name}")
+                print(f"restored {stream_name}/{symbol}/{target.name}", flush=True)
             finally:
                 temp.unlink(missing_ok=True)
-        print(f"sync complete: restored={restored} already_present={skipped}")
+        print(f"sync complete: restored={restored} already_present={skipped}", flush=True)
 
     state_path = args.state_file
     cursor = args.since_ns

@@ -410,7 +410,7 @@ For example, verify depth, Mark, and finalized Funding coverage separately:
 
 ```sh
 python3 audit_capture_loss_ledger.py \
-  --loss-ledger /data/td-market-data-recovered/.relay-losses.jsonl \
+  --loss-ledger /mnt/data/td-market-data-local/hot/.relay-losses.jsonl \
   --stream usdm-depth --symbol BTCUSDT \
   --start 2026-11-01T00:00:00Z --end 2026-11-01T01:00:00Z
 ```
@@ -435,22 +435,28 @@ TD_RELAY_API_KEY='your-private-key' python3 sync.py \
   --output /data/td-market-data-recovered
 ```
 
-It verifies an existing local file against the remote raw-data hash before
+It verifies an existing hot file against the remote raw-data hash before
 skipping it. A different local file with the same capture name is reported and
-left untouched. The output root can be the existing local capture root when its
-`stream/symbol/file.jsonl` layout matches; alternatively, keep it in a separate
-recovery root and let Dataset exporters read both roots. Restored files retain
-their original capture identities and are never merged into or substituted for
-another capture. Relay requests identify the client as `td-market-data-sync`
-so Cloudflare's browser-integrity checks do not mistake Python's default
-User-Agent for an unrecognized browser.
+left untouched. When `--archive-root` is provided, the worker also checks the
+local relay's archive metadata and skips a capture already present in the
+compressed archive. This lets the worker restore missing captures into the
+local hot tree without downloading them again after the local retention worker
+compresses them. Restored files retain their original capture identities and
+are never merged into or substituted for another capture. Relay requests
+identify the client as `td-market-data-sync` so Cloudflare's browser-integrity
+checks do not mistake Python's default User-Agent for an unrecognized browser.
 
 For a long-running local recovery worker, set `TD_RELAY_BASE_URL` and
 `TD_RELAY_API_KEY`, then add `--continuous --poll-seconds 300 --state-file
-/var/lib/td-market-data-recovered/cursor.json`. It polls every five minutes by
-default and rechecks the full remotely retained 73-hour index on every pass.
-Missing local capture files are restored after remote and decompressed hashes
-verify; conflicting same-name files are left untouched and reported as errors.
+/mnt/data/td-market-data-local/state/vps-sync-cursor.json --archive-root
+/mnt/data/td-market-data-local/archive` and set `--output
+/mnt/data/td-market-data-local/hot`. The installed service uses this layout. It
+polls every five minutes by default and rechecks the full remotely retained
+73-hour index on every pass. Missing local captures are restored directly into
+the same hot tree used by the local collectors. Existing compressed captures
+are matched using the local relay's raw hash metadata, so they aren't pulled
+back into hot on every scan. Conflicting same-name files are left untouched
+and reported as errors.
 The sync client also requires a complete `capture_stopped` record before it
 publishes a download; entries that still refer to a growing remote capture are
 deferred and retried on the next scan.
@@ -462,22 +468,19 @@ files while the relay retains them; it cannot reconstruct exchange events that
 were absent from both local and VPS captures, which remain explicit gaps and
 make affected exports/replays inadmissible.
 
-`deploy/td-market-data-sync.service` is a systemd template for that local
-worker. It is not installed automatically. Before enabling it, create the
-`td-market-data-sync` OS user, install this repository and its Python
-requirements under `/opt/td-market-data-relay/.venv`, and create a mode-0600
-`/etc/td-market-data-relay/sync.env` containing the relay HTTPS URL and API key.
-On a local recovery host with Python 3.13, `uv`, and systemd, run
+`deploy/td-market-data-sync.service` is a systemd unit for that local worker.
+It runs as the same `td-marketdata` account that owns the local hot/archive
+trees. Before enabling it, install local capture storage, this repository, and
+its Python requirements under `/opt/td-market-data-relay/.venv`, and create a
+mode-0600 `/etc/td-market-data-relay/sync.env` containing the relay HTTPS URL
+and API key. On a local recovery host with Python 3.13, `uv`, and systemd, run
 `sudo scripts/install_local_sync_service.sh` from this repository to perform
 that setup. The installer prompts for the existing VPS relay API key without
 echoing it, saves it only to the mode-0600 environment file, and uses `uv` with
-a repository-local temporary directory to create the virtual environment and
-install Python requirements.
-The unit writes only to its dedicated `/var/lib/td-market-data-recovered`
-state directory. To write directly into an existing local capture tree, update
-the unit's `--output` and `ReadWritePaths` to that tree, preserving its
-`stream/symbol` layout and ownership; the default remains an isolated recovery
-directory.
+a bounded repository-local temporary directory to create the virtual
+environment and install Python requirements. It restores directly into the
+local hot tree and checks the archive tree before each download; the local
+relay then applies its normal compression and retention policy.
 
 ## Local development
 

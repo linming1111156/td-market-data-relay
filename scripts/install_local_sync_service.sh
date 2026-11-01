@@ -14,7 +14,8 @@ UNIT_NAME=td-market-data-sync.service
 PYTHON_BIN=${PYTHON_BIN:-python3.13}
 UV_BIN=${UV_BIN:-uv}
 
-for required in collector.py sync.py requirements.txt deploy/td-market-data-sync.service; do
+for required in collector.py sync.py requirements.txt deploy/td-market-data-sync.service \
+  deploy/td-market-data-sync-local-hot.conf; do
   if [[ ! -f "$SOURCE_ROOT/$required" ]]; then
     echo "required source file is missing: $SOURCE_ROOT/$required" >&2
     exit 1
@@ -32,20 +33,24 @@ if ! command -v systemctl >/dev/null 2>&1; then
   echo "systemd is required for this installer" >&2
   exit 1
 fi
+mountpoint -q /mnt/data || { echo "/mnt/data must be mounted before local recovery is installed" >&2; exit 1; }
+for path in /mnt/data/td-market-data-local/hot \
+  /mnt/data/td-market-data-local/archive /mnt/data/td-market-data-local/state; do
+  [[ -d "$path" && ! -L "$path" ]] || {
+    echo "$path must be a real directory; install local capture storage first" >&2
+    exit 1
+  }
+done
+id td-marketdata >/dev/null 2>&1 || {
+  echo "td-marketdata account is required; install local capture services first" >&2
+  exit 1
+}
 
 install -d -o root -g root -m 0755 "$INSTALL_ROOT"
 install -d -o root -g root -m 0750 "$ENV_DIR"
 install -m 0644 "$SOURCE_ROOT/collector.py" "$INSTALL_ROOT/collector.py"
 install -m 0644 "$SOURCE_ROOT/sync.py" "$INSTALL_ROOT/sync.py"
 install -m 0644 "$SOURCE_ROOT/requirements.txt" "$INSTALL_ROOT/requirements.txt"
-
-if ! getent group td-market-data-sync >/dev/null 2>&1; then
-  groupadd --system td-market-data-sync
-fi
-if ! id td-market-data-sync >/dev/null 2>&1; then
-  useradd --system --gid td-market-data-sync --no-create-home --home-dir /nonexistent \
-    --shell /usr/sbin/nologin td-market-data-sync
-fi
 
 if [[ -e "$ENV_FILE" || -L "$ENV_FILE" ]]; then
   if [[ ! -f "$ENV_FILE" || -L "$ENV_FILE" ]]; then
@@ -112,6 +117,18 @@ if [[ -L "$INSTALL_ROOT/.venv" ]]; then
   echo "$INSTALL_ROOT/.venv must not be a symlink" >&2
   exit 1
 fi
+SYNC_SERVICE_WAS_ACTIVE=0
+if systemctl is-active --quiet "$UNIT_NAME"; then
+  systemctl stop "$UNIT_NAME"
+  SYNC_SERVICE_WAS_ACTIVE=1
+fi
+restart_sync_service_on_failure() {
+  local exit_status=$?
+  if [[ "$exit_status" -ne 0 && "$SYNC_SERVICE_WAS_ACTIVE" -eq 1 ]]; then
+    systemctl start "$UNIT_NAME" || true
+  fi
+}
+trap restart_sync_service_on_failure EXIT
 install -d -o root -g root -m 0755 "$INSTALL_ROOT/.tmp"
 TMPDIR="$INSTALL_ROOT/.tmp" "$UV_BIN" venv --clear --python "$PYTHON_BIN" "$INSTALL_ROOT/.venv"
 TMPDIR="$INSTALL_ROOT/.tmp" UV_CACHE_DIR="$INSTALL_ROOT/.uv-cache" \
@@ -120,11 +137,21 @@ TMPDIR="$INSTALL_ROOT/.tmp" UV_CACHE_DIR="$INSTALL_ROOT/.uv-cache" \
 rm -rf "$INSTALL_ROOT/.tmp"
 install -m 0644 "$SOURCE_ROOT/deploy/td-market-data-sync.service" \
   "/etc/systemd/system/$UNIT_NAME"
+DROPIN_DIR="/etc/systemd/system/$UNIT_NAME.d"
+DROPIN_FILE="$DROPIN_DIR/20-local-hot-storage.conf"
+[[ ! -L "$DROPIN_DIR" && ! -L "$DROPIN_FILE" ]] || {
+  echo "$DROPIN_DIR and its managed drop-in must not be symlinks" >&2
+  exit 1
+}
+install -d -o root -g root -m 0755 "$DROPIN_DIR"
+install -m 0644 "$SOURCE_ROOT/deploy/td-market-data-sync-local-hot.conf" "$DROPIN_FILE"
 systemctl daemon-reload
-systemctl enable --now "$UNIT_NAME"
+systemctl enable "$UNIT_NAME"
+systemctl restart "$UNIT_NAME" || systemctl start "$UNIT_NAME"
 
-echo "Local Relay recovery service is enabled."
-echo "State and recovered captures: /var/lib/td-market-data-recovered"
+echo "Remote captures will be restored directly into: /mnt/data/td-market-data-local/hot"
+echo "Previously archived captures are checked under: /mnt/data/td-market-data-local/archive"
+echo "Sync cursor: /mnt/data/td-market-data-local/state/vps-sync-cursor.json"
 echo "Environment file: $ENV_FILE (mode 0600; secret value was not displayed)"
 echo "Check status with: systemctl status $UNIT_NAME"
 echo "Follow logs with: journalctl -u $UNIT_NAME -f"
