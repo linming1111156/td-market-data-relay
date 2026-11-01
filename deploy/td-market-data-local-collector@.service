@@ -13,7 +13,7 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 WorkingDirectory=/opt/td-market-data-relay
 ExecStart=/opt/td-market-data-relay/.venv/bin/python3 /opt/td-market-data-relay/collector.py --kind %i --symbol BTCUSDT --duration-seconds 3600 --max-bytes 268435456 --poll-seconds 60
 Restart=always
-RestartSec=5s
+RestartSec=100ms
 KillSignal=SIGINT
 TimeoutStopSec=35s
 UMask=0027

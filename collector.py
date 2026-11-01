@@ -362,7 +362,7 @@ async def receive_depth_session(
         open_timeout=10,
         ping_interval=20,
         ping_timeout=20,
-        close_timeout=10,
+        close_timeout=0.5,
         max_size=MAX_FRAME_BYTES,
         max_queue=32,
         compression=None,
@@ -496,7 +496,7 @@ async def receive_observation_session(
 ) -> None:
     url = websocket_url(kind, symbol)
     async with connect(url, open_timeout=10, ping_interval=20, ping_timeout=20,
-                       close_timeout=10, max_size=MAX_FRAME_BYTES,
+                       close_timeout=0.5, max_size=MAX_FRAME_BYTES,
                        max_queue=32, compression=None) as websocket:
         session_id = uuid.uuid4().hex
         capture.record("session_connected", recorded_at_unix_ns=now_ns(), session_id=session_id, url=url)

@@ -505,7 +505,10 @@ the relay API binds only to `127.0.0.1:18080`. USD-M Mark Price and depth
 capture run as local collectors alongside Spot depth/trades/klines, USD-M
 aggregate trades/klines, and finalized Funding history. The installer enables
 all eight streams so a fresh installation has the complete public-market
-capture set without depending on a separate Gateway research schedule.
+capture set without depending on a separate Gateway research schedule. Hourly
+file rotation bounds WebSocket shutdown to 500 ms and service restart delay to
+100 ms, keeping the receive gap within the configured five-second budget under
+normal network conditions.
 
 On a local Debian/Ubuntu host with Python 3.13, `uv`, and systemd, run:
 
