@@ -1,0 +1,23 @@
+[project]
+name = "td-market-data-offline-rl"
+version = "0.1.0"
+description = "Isolated USD-M offline RL research runner for Relay datasets"
+requires-python = ">=3.13,<3.16"
+dependencies = [
+  "numpy==2.3.4",
+  "torch==2.15.0",
+  "zstandard==0.23.0",
+]
+
+[project.scripts]
+td-market-data-rl = "td_market_data_rl.cli:main"
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/td_market_data_rl"]
+
+[tool.uv]
+package = true

@@ -1,5 +1,9 @@
 # TD public market data relay
 
+The isolated fixed-Dataset → causal-features → offline USD-M RL runner lives
+in [`offline_rl/README.md`](offline_rl/README.md). It is a separate Python
+project and does not change the existing Gateway workspace.
+
 An independent Python implementation for future public Binance market data. It
 does not import, copy, or modify the private `td-gateway` repository. It does
 not collect account, balance, order, API-key, or other private data.
