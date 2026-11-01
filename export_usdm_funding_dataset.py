@@ -238,8 +238,9 @@ def expected_schedule(observations: list[dict[str, Any]], start_ns: int, end_ns:
                          "mark_observation_age_ns": age_ns,
                          "mark_session_id": latest["session_id"],
                          "mark_payload_sha256": latest["payload_sha256"]})
-    if not schedule:
-        raise FundingDatasetRejected("no independently observed Funding settlements in the window")
+    # A valid short research window can contain no scheduled settlement. The
+    # continuous Mark and REST capture checks below still prove that the window
+    # was observed; publish an empty event set instead of rejecting it.
     return schedule
 
 
