@@ -352,6 +352,8 @@ For a long-running local recovery worker, set `TD_RELAY_BASE_URL` and
 default and rechecks the full remotely retained 73-hour index on every pass.
 Missing local capture files are restored after remote and decompressed hashes
 verify; conflicting same-name files are left untouched and reported as errors.
+After an interrupted sync, partial download/decompression files are removed on
+retry only after confirming the recorded owner process has exited.
 Only after a full index scan does the worker advance its last-successful-scan
 cursor. A failed pass retries at the next poll. This recovers missing capture
 files while the relay retains them; it cannot reconstruct exchange events that

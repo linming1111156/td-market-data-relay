@@ -38,6 +38,25 @@ def digest(path: Path) -> str:
     return h.hexdigest()
 
 
+def remove_abandoned_temp(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    match = re.search(r"\.(?:download|decoded|tmp)-(\d+)$", path.name)
+    if match is None or path.is_symlink() or not path.is_file():
+        raise RuntimeError(f"unexpected sync temporary path; left untouched: {path}")
+    owner_pid = int(match.group(1))
+    if owner_pid == os.getpid():
+        raise RuntimeError(f"sync temporary file is already owned by this process: {path}")
+    try:
+        os.kill(owner_pid, 0)
+    except ProcessLookupError:
+        path.unlink()
+        return
+    except PermissionError as error:
+        raise RuntimeError(f"cannot verify temporary file owner {owner_pid}; left untouched: {path}") from error
+    raise RuntimeError(f"temporary file owner {owner_pid} is still running; left untouched: {path}")
+
+
 def publish_without_overwrite(source: Path, target: Path) -> None:
     os.link(source, target)
     source.unlink()
@@ -113,6 +132,7 @@ def main() -> None:
                     continue
                 raise RuntimeError(f"local capture differs from relay copy; left untouched: {target}")
             temp = target.with_name(target.name + f".download-{os.getpid()}")
+            remove_abandoned_temp(temp)
             route = "/v1/captures/" + urllib.parse.quote(str(entry["id"]), safe="")
             try:
                 with request(base + route, key, timeout=180) as response, temp.open("xb") as output:
@@ -131,6 +151,7 @@ def main() -> None:
                     import zstandard
 
                     decoded = target.with_name(target.name + f".decoded-{os.getpid()}")
+                    remove_abandoned_temp(decoded)
                     uncompressed_size = 0
                     try:
                         with temp.open("rb") as source, decoded.open("xb") as output:
@@ -178,6 +199,7 @@ def main() -> None:
             cursor = time.time_ns()
             state_path.parent.mkdir(parents=True, exist_ok=True)
             temp_state = state_path.with_name(state_path.name + f".tmp-{os.getpid()}")
+            remove_abandoned_temp(temp_state)
             try:
                 with temp_state.open("x") as stream:
                     stream.write(json.dumps({"schema": "td_market_data_sync_cursor_v1", "cursor_ns": cursor}) + "\n")

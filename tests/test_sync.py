@@ -39,6 +39,23 @@ class RelayHandler(BaseHTTPRequestHandler):
 
 
 class SyncTests(unittest.TestCase):
+    def test_removes_stale_partial_download_only_after_owner_exit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            partial = Path(temporary) / "capture.jsonl.download-987654321"
+            partial.write_bytes(b"partial")
+            with patch("sync.os.kill", side_effect=ProcessLookupError):
+                sync.remove_abandoned_temp(partial)
+            self.assertFalse(partial.exists())
+
+    def test_preserves_partial_download_while_owner_process_exists(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            partial = Path(temporary) / "capture.jsonl.download-987654321"
+            partial.write_bytes(b"partial")
+            with patch("sync.os.kill", return_value=None):
+                with self.assertRaisesRegex(RuntimeError, "still running"):
+                    sync.remove_abandoned_temp(partial)
+            self.assertEqual(partial.read_bytes(), b"partial")
+
     def test_continuous_reconciliation_rechecks_the_full_remote_retention(self):
         now_ns = 2_000_000_000_000_000_000
         self.assertEqual(sync.continuous_scan_start(now_ns, 0),
