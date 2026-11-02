@@ -73,7 +73,17 @@ occur every 15 minutes; the episode simulator accounts for mark PnL, finalized
 funding, trade participation, the frozen notional/position caps, fees, and
 adverse slippage. The default cost case is 10 bps taker fee plus 5 bps adverse
 slippage. CUDA accelerates policy evaluation and gradient updates; market
-accounting runs on CPU.
+accounting runs on CPU. For audited Vision history, Rust decompresses each
+immutable feature/ledger stream in order, parses bounded 16,384-row chunks on
+multiple worker threads, and writes a compact cache under the research-inputs
+directory. It reuses this cache for each update instead of reparsing the JSONL.
+Account replay still walks each window chronologically because position and
+equity depend on earlier actions; separate Train windows run concurrently. The
+compact decision batches return to Python for PyTorch updates. GPU replay would
+not parallelize this stateful accounting loop; historical action selection and
+accounting run on CPU, while CUDA accelerates gradient updates. Each run records
+the cache manifest, engine source fingerprint, and binary hash. Relay-capture
+training retains Python replay.
 
 The artifact contains a JSON model, compressed per-update trace, and manifest
 with input hashes, role-plan hash, trainer-code hash, cost settings, seed,

@@ -8,6 +8,9 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
+mod replay_cache;
+mod training_replay;
+
 const MINUTE_MS: i64 = 60_000;
 const FEATURE_NAMES: [&str; 7] = [
     "mark_log_return_1m",
@@ -1168,7 +1171,9 @@ fn run() -> Result<(), String> {
     match args.next().as_deref() {
         Some("process") => run_process(args),
         Some("derive-features") => run_features(args),
-        _ => Err("usage: engine process|derive-features [OPTIONS]".into()),
+        Some("training-replay") => training_replay::run(args),
+        Some("training-prepare") => replay_cache::run(args),
+        _ => Err("usage: engine process|derive-features|training-replay [OPTIONS]".into()),
     }
 }
 

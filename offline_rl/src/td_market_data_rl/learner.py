@@ -8,6 +8,7 @@ import os
 import random
 import resource
 import shutil
+import subprocess
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -43,12 +44,182 @@ def jsonl(path: Path) -> Iterator[dict[str, Any]]:
 
 def trainer_code_sha256() -> str:
     digest = hashlib.sha256()
-    for source_file in sorted(Path(__file__).parent.glob("*.py")):
+    rust_root = RELAY_ROOT / "bulk_engine"
+    sources = (list(Path(__file__).parent.glob("*.py"))
+               + [rust_root / "src" / "main.rs",
+                  rust_root / "src" / "training_replay.rs",
+                  rust_root / "src" / "replay_cache.rs",
+                  rust_root / "Cargo.toml", rust_root / "Cargo.lock"])
+    for source_file in sorted(sources):
         digest.update(source_file.name.encode() + b"\0")
         with source_file.open("rb") as source_stream:
             for chunk in iter(lambda: source_stream.read(1024 * 1024), b""):
                 digest.update(chunk)
     return digest.hexdigest()
+
+
+def prepare_historical_cache(train_sources: list[dict[str, Any]], stage: Path) -> tuple[Path, str]:
+    """Parse immutable zstd JSONL once, in bounded parallel chunks, outside /tmp."""
+    engine = RELAY_ROOT / "bulk_engine" / "target" / "release" / "td-market-data-bulk-engine"
+    if not engine.is_file():
+        raise ValueError("Rust replay engine is missing; build it with cargo build --release")
+    engine_hash = sha256_file(engine)
+    sources = []
+    for item in train_sources:
+        feature_path, ledger_path = Path(item["feature_path"]), Path(item["ledger_path"])
+        sources.append({"id": item["id"], "start_ns": item["start_ns"],
+                        "end_ns": item["end_ns"],
+                        "minute_count": (item["end_ns"] - item["start_ns"]) // MINUTE_NS,
+                        "feature_path": str(feature_path), "ledger_path": str(ledger_path),
+                        "feature_sha256": sha256_file(feature_path),
+                        "ledger_sha256": sha256_file(ledger_path)})
+    key_payload = {"schema": "td_market_data_historical_replay_cache_key", "version": 1,
+                   "engine_sha256": engine_hash, "trainer_code_sha256": trainer_code_sha256(),
+                   "sources": sources}
+    cache_key = hashlib.sha256(canonical(key_payload)).hexdigest()
+    cache_root = Path(train_sources[0]["feature_path"]).parents[3] / f".td-market-data-rust-cache-{cache_key[:16]}"
+    cache_manifest_path = cache_root / "cache-manifest.json"
+    if cache_manifest_path.is_file():
+        manifest = json.loads(cache_manifest_path.read_bytes())
+        if (manifest.get("schema") != "td_market_data_historical_replay_cache"
+                or manifest.get("version") != 1
+                or manifest.get("cache_key_sha256") != cache_key
+                or manifest.get("engine_sha256") != engine_hash):
+            raise ValueError("existing Rust replay cache manifest does not match current inputs")
+        for window in manifest.get("windows", []):
+            if Path(window.get("path", "")).name != window.get("path"):
+                raise ValueError("existing Rust replay cache contains an unsafe file path")
+            cache_path = cache_root / window["path"]
+            if not cache_path.is_file() or sha256_file(cache_path) != window["sha256"]:
+                raise ValueError("existing Rust replay cache file is missing or corrupt")
+        if len(manifest.get("windows", [])) != len(sources):
+            raise ValueError("existing Rust replay cache window inventory differs")
+        return cache_root, sha256_file(cache_manifest_path)
+
+    # Use the dataset's parent filesystem for bounded staging, never system /tmp.
+    cache_parent = cache_root.parent
+    cache_parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{cache_root.name}.staging-", dir=cache_parent))
+    request_path, report_path = stage / "cache-prepare-request.json", stage / "cache-prepare-report.json"
+    request = {"schema": "td_market_data_training_prepare_request", "version": 1,
+               "windows": [{key: item[key] for key in
+                            ("id", "start_ns", "end_ns", "minute_count", "feature_path", "ledger_path")}
+                           for item in sources],
+               "output_directory": str(staging)}
+    request_path.write_bytes(canonical(request) + b"\n")
+    try:
+        subprocess.run([str(engine), "training-prepare", str(request_path), str(report_path)],
+                       check=True, capture_output=True, text=True)
+        report = json.loads(report_path.read_bytes())
+        if (report.get("schema") != "td_market_data_training_prepare_result"
+                or report.get("version") != 1
+                or len(report.get("windows", [])) != len(sources)):
+            raise ValueError("Rust cache preparer returned an invalid report")
+        windows = []
+        by_id = {item["id"]: item for item in sources}
+        for row in report["windows"]:
+            source = by_id.get(row.get("window_id"))
+            if source is None or row.get("rows") != source["minute_count"]:
+                raise ValueError("Rust cache row count differs from the audited Train window")
+            path = staging / row["path"]
+            windows.append({"id": row["window_id"], "path": row["path"],
+                            "rows": row["rows"], "sha256": sha256_file(path)})
+        manifest = {"schema": "td_market_data_historical_replay_cache", "version": 1,
+                    "cache_key_sha256": cache_key, "engine_sha256": engine_hash,
+                    "trainer_code_sha256": key_payload["trainer_code_sha256"],
+                    "source_windows": sources, "chunk_rows": report["chunk_rows"],
+                    "workers_per_window": report["workers_per_window"], "windows": windows}
+        (staging / "cache-manifest.json").write_bytes(canonical(manifest) + b"\n")
+        if cache_root.exists():
+            raise ValueError("Rust replay cache appeared concurrently; inspect before removing either cache")
+        staging.rename(cache_root)
+    except subprocess.CalledProcessError as error:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise ValueError(f"Rust historical cache preparation failed: {error.stderr.strip()}") from error
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    finally:
+        request_path.unlink(missing_ok=True)
+        report_path.unlink(missing_ok=True)
+    return cache_root, sha256_file(cache_root / "cache-manifest.json")
+
+
+def replay_historical_rust(stage: Path, update: int, train_sources: list[dict[str, Any]],
+                           cache_root: Path,
+                           factor_names: list[str], means: list[float], scales: list[float],
+                           actor: torch.nn.Linear, seed: int, fee_bps: int,
+                           slippage_bps: int, memory_limit_mb: int
+                           ) -> tuple[list[tuple[np.ndarray, np.ndarray, np.ndarray]], list[dict[str, Any]]]:
+    """Run ordered, per-window accounting in the Rust engine.
+
+    Audited Train windows are separate episodes and can be replayed concurrently;
+    time inside each episode remains ordered because actions change position.
+    Only compact decision experiences return to PyTorch for GPU gradient updates.
+    """
+    engine = RELAY_ROOT / "bulk_engine" / "target" / "release" / "td-market-data-bulk-engine"
+    if not engine.is_file():
+        raise ValueError(f"Rust replay engine is missing; build it with cargo build --release --manifest-path {RELAY_ROOT / 'bulk_engine' / 'Cargo.toml'}")
+    work = stage / f"replay-{update:03d}"
+    work.mkdir()
+    request_path = work / "request.json"
+    report_path = work / "report.json"
+    engine_output = work / "experiences"
+    parameter_weights = actor.weight.detach().cpu().tolist()
+    parameter_bias = actor.bias.detach().cpu().tolist()
+    request = {
+        "schema": "td_market_data_training_replay_request", "version": 1,
+        "windows": [{"id": item["id"],
+                     "minute_count": (item["end_ns"] - item["start_ns"]) // MINUTE_NS,
+                     "cache_path": str(cache_root / f"window-{index:02}.tdcache")}
+                    for index, item in enumerate(train_sources)],
+        "factor_names": factor_names, "means": means, "scales": scales,
+        "weights": parameter_weights, "bias": parameter_bias,
+        "seed": int(seed + update), "fee_bps": float(fee_bps),
+        "slippage_bps": float(slippage_bps),
+        "memory_limit_mb": memory_limit_mb,
+        "output_directory": str(engine_output),
+    }
+    request_path.write_bytes(canonical(request) + b"\n")
+    try:
+        subprocess.run([str(engine), "training-replay", str(request_path), str(report_path)],
+                       check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as error:
+        raise ValueError(f"Rust historical replay failed: {error.stderr.strip()}") from error
+    report = json.loads(report_path.read_bytes())
+    if (report.get("schema") != "td_market_data_training_replay_result"
+            or report.get("version") != 1
+            or len(report.get("windows", [])) != len(train_sources)):
+        raise ValueError("Rust replay engine returned an invalid report")
+    by_id = {item["id"]: item for item in train_sources}
+    episode_experiences = []
+    window_stats = []
+    dtype = np.dtype([("state", "<f4", (len(factor_names) + 1,)),
+                      ("action", "u1"), ("reward", "<f4")], align=False)
+    expected_record_size = (len(factor_names) + 1) * 4 + 5
+    for row in report["windows"]:
+        source = by_id.get(row.get("window_id"))
+        if source is None:
+            raise ValueError("Rust replay returned an unknown Train window")
+        path = engine_output / row["experiences_path"]
+        with path.open("rb") as stream:
+            header = stream.read(20)
+            if len(header) != 20 or header[:8] != b"TDRP1\0\0\0":
+                raise ValueError("Rust replay experience header is invalid")
+            width = int.from_bytes(header[8:12], "little")
+            count = int.from_bytes(header[12:20], "little")
+            if width != len(factor_names) + 1 or count != row["experience_count"]:
+                raise ValueError("Rust replay experience dimensions do not match report")
+            records = np.fromfile(stream, dtype=dtype, count=count)
+            if records.size != count or stream.read(1):
+                raise ValueError("Rust replay experience file is truncated or oversized")
+            if dtype.itemsize != expected_record_size:
+                raise ValueError("host experience record layout is not packed as specified")
+        episode_experiences.append((records["state"], records["action"].astype(np.int64),
+                                    records["reward"]))
+        window_stats.append({"window_id": source["id"], **row["stats"]})
+    shutil.rmtree(work)
+    return episode_experiences, window_stats
 
 
 def fit_normalizer(path: Path, start: int, end: int) -> tuple[list[float], list[float], int]:
@@ -337,7 +508,6 @@ def train(args: Any) -> dict[str, Any]:
         normalizer_paths, args.factor_set)
     device, fallback = select_device(args.device, args.max_gpu_memory_mb)
     set_seed(args.seed)
-    rng = torch.Generator(device=device).manual_seed(args.seed)
     actor = torch.nn.Linear(len(factor_names) + 1, len(ACTION_TARGETS_LOTS), bias=True, device=device)
     torch.nn.init.zeros_(actor.weight)
     torch.nn.init.zeros_(actor.bias)
@@ -350,6 +520,10 @@ def train(args: Any) -> dict[str, Any]:
     output.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent))
     try:
+        replay_cache_root = None
+        replay_cache_manifest_hash = None
+        if historical_training:
+            replay_cache_root, replay_cache_manifest_hash = prepare_historical_cache(train_sources, stage)
         trace_path = stage / "training_trace.jsonl.zst"
         trace_digest = hashlib.sha256()
         episode_stats = []
@@ -357,41 +531,54 @@ def train(args: Any) -> dict[str, Any]:
         with trace_path.open("xb") as raw_trace:
             with zstandard.ZstdCompressor(level=3).stream_writer(raw_trace, closefd=False) as compressed:
                 for update in range(args.updates):
-                    def select_action(feature: dict[str, Any], position: int) -> tuple[int, list[float]]:
-                        _, values = selected_factor_values(feature["features"], args.factor_set)
-                        base = [(value - means[index]) / scales[index]
-                                for index, value in enumerate(values)]
-                        state = base + [position]
-                        tensor = torch.tensor(state, dtype=torch.float32, device=device)
-                        probabilities = torch.softmax(actor(tensor), dim=0)
-                        return int(torch.multinomial(probabilities, 1, generator=rng).item()), state
+                    if historical_training:
+                        episode_experiences, window_stats = replay_historical_rust(
+                            stage, update, train_sources, replay_cache_root,
+                            factor_names, means, scales,
+                            actor, args.seed, args.fee_bps, args.slippage_bps,
+                            args.max_memory_mb)
+                    else:
+                        episode_experiences, window_stats = [], []
+                        rng = torch.Generator(device=device).manual_seed(args.seed + update)
 
-                    episode_experiences = []
-                    window_stats = []
-                    for source_window in train_sources:
-                        experiences, stats = simulate_episode(
-                            source_window["feature_path"], source_window["ledger_path"],
-                            {"start_ns": source_window["start_ns"], "end_ns": source_window["end_ns"]},
-                            select_action, args.fee_bps, args.slippage_bps,
-                            args.max_memory_mb, collect_experiences=True)
-                        if not experiences:
-                            raise ValueError(f"Train window {source_window['id']} contains no policy decisions")
-                        episode_experiences.append(experiences)
-                        window_stats.append({"window_id": source_window["id"], **stats})
-                    experiences = [item for episode in episode_experiences for item in episode]
-                    if not experiences:
+                        def select_action(feature: dict[str, Any], position: int) -> tuple[int, list[float]]:
+                            _, values = selected_factor_values(feature["features"], args.factor_set)
+                            base = [(value - means[index]) / scales[index]
+                                    for index, value in enumerate(values)]
+                            state = base + [position]
+                            tensor = torch.tensor(state, dtype=torch.float32, device=device)
+                            probabilities = torch.softmax(actor(tensor), dim=0)
+                            return int(torch.multinomial(probabilities, 1, generator=rng).item()), state
+
+                        for source_window in train_sources:
+                            experiences, stats = simulate_episode(
+                                source_window["feature_path"], source_window["ledger_path"],
+                                {"start_ns": source_window["start_ns"], "end_ns": source_window["end_ns"]},
+                                select_action, args.fee_bps, args.slippage_bps,
+                                args.max_memory_mb, collect_experiences=True)
+                            if not experiences:
+                                raise ValueError(f"Train window {source_window['id']} contains no policy decisions")
+                            episode_experiences.append((
+                                np.asarray([item[0] for item in experiences], dtype=np.float32),
+                                np.asarray([item[1] for item in experiences], dtype=np.int64),
+                                np.asarray([item[2] for item in experiences], dtype=np.float32)))
+                            window_stats.append({"window_id": source_window["id"], **stats})
+                    if not episode_experiences or sum(len(item[1]) for item in episode_experiences) == 0:
                         raise ValueError("Train window contains no ready policy decisions")
-                    states = torch.tensor([item[0] for item in experiences], dtype=torch.float32, device=device)
-                    actions = torch.tensor([item[1] for item in experiences], dtype=torch.int64, device=device)
-                    rewards = torch.tensor([item[2] for item in experiences], dtype=torch.float32, device=device)
+                    state_array = np.concatenate([item[0] for item in episode_experiences])
+                    action_array = np.concatenate([item[1] for item in episode_experiences])
+                    reward_array = np.concatenate([item[2] for item in episode_experiences])
+                    states = torch.as_tensor(state_array, dtype=torch.float32, device=device)
+                    actions = torch.as_tensor(action_array, dtype=torch.int64, device=device)
+                    rewards = torch.as_tensor(reward_array, dtype=torch.float32, device=device)
                     returns = torch.empty_like(rewards)
                     offset = 0
                     for episode in episode_experiences:
                         running_return = torch.zeros((), dtype=torch.float32, device=device)
-                        for index in range(len(episode) - 1, -1, -1):
+                        for index in range(len(episode[2]) - 1, -1, -1):
                             running_return = rewards[offset + index] + 0.99 * running_return
                             returns[offset + index] = running_return
-                        offset += len(episode)
+                        offset += len(episode[2])
                     logits = actor(states)
                     all_log_probs = torch.log_softmax(logits, dim=1)
                     log_probs = all_log_probs.gather(1, actions[:, None]).squeeze(1)
@@ -452,7 +639,7 @@ def train(args: Any) -> dict[str, Any]:
                                   "action_counts_short_flat_long": action_counts,
                                   "discounted_return_mean_short_flat_long": action_return_means})
                     episode_stats.append(stats)
-                    transitions += len(experiences)
+                    transitions += len(action_array)
                     line = canonical(stats) + b"\n"
                     compressed.write(line)
                     trace_digest.update(line)
@@ -487,6 +674,11 @@ def train(args: Any) -> dict[str, Any]:
                                           else "scalar exponential moving average alpha=0.1"),
                              "optimizer": "SGD", "learning_rate": learning_rate,
                              "gradient_norm_clip": 10.0, "entropy_bonus": entropy_bonus,
+                             "historical_replay_engine": ("Rust ordered account replay over parallel chunk cache v1"
+                                                           if historical_training else "Python ordered replay"),
+                             "historical_replay_cache_manifest_sha256": replay_cache_manifest_hash,
+                             "historical_action_sampler": ("xorshift64star-v1"
+                                                           if historical_training else "torch.multinomial"),
                              "historical_advantage_normalization":
                                  "per-update centered and population-standardized; epsilon=1e-8"
                                  if historical_training else "disabled"},
@@ -501,7 +693,10 @@ def train(args: Any) -> dict[str, Any]:
                "limits": {"max_train_minutes": MAX_TRAIN_MINUTES, "max_updates": MAX_UPDATES,
                           "max_memory_mb": args.max_memory_mb, "max_gpu_memory_mb": args.max_gpu_memory_mb},
                "runtime_versions": {"torch": torch.__version__, "numpy": np.__version__,
-                                    "cuda": torch.version.cuda},
+                                    "cuda": torch.version.cuda,
+                                    "rust_replay_engine_sha256": (
+                                        sha256_file(RELAY_ROOT / "bulk_engine" / "target" / "release" / "td-market-data-bulk-engine")
+                                        if historical_training else None)},
                "episode_stats": episode_stats,
                "model_sha256": sha256_file(model_path),
                "trace_sha256": sha256_file(trace_path),
