@@ -16,6 +16,7 @@ from .contracts import (ACTION_TARGETS_LOTS, MAX_TRAIN_MINUTES, MINUTE_NS,
                         reject_system_temp, sha256_file)
 from .learner import set_seed, simulate_episode
 from .factors import selected_factor_values, suites, registry_sha256
+from .historical import verify_plan as verify_historical_role_plan
 
 
 BASELINE_PATH = Path(__file__).with_name("baseline_strategies.json")
@@ -34,17 +35,34 @@ def package_code_sha256() -> str:
     return digest.hexdigest()
 
 
-def load_inputs(features_path: Path, dataset_path: Path, role_plan_path: Path,
-                training_path: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
-    for path, label in ((features_path, "feature input"), (dataset_path, "Dataset input"),
-                        (role_plan_path, "role-plan input"), (training_path, "training input")):
+def load_inputs(features_path: Path | None, dataset_path: Path | None, role_plan_path: Path,
+                training_path: Path, historical_root: Path | None = None):
+    for path, label in ((role_plan_path, "role-plan input"), (training_path, "training input")):
         reject_system_temp(path, label)
+    if historical_root is not None:
+        if features_path is not None or dataset_path is not None:
+            raise ValueError("historical evaluation cannot mix Relay and Vision inputs")
+        reject_system_temp(historical_root, "historical input")
+    elif features_path is None or dataset_path is None:
+        raise ValueError("evaluation requires Relay inputs or --historical-inputs")
+    else:
+        for path, label in ((features_path, "feature input"), (dataset_path, "Dataset input")):
+            reject_system_temp(path, label)
     if role_plan_path.is_symlink() or training_path.is_symlink():
         raise ValueError("role plan/training artifact must not be a symlink")
-    feature_manifest, source_manifest = read_verified_features(features_path, dataset_path)
-    feature_hash = sha256_file(features_path / "manifest.json")
-    source_hash = sha256_file(dataset_path / "manifest.json")
-    plan = read_role_plan(role_plan_path, feature_manifest, source_manifest, feature_hash, source_hash)
+    if historical_root is None:
+        feature_manifest, source_manifest = read_verified_features(features_path, dataset_path)
+        feature_hash = sha256_file(features_path / "manifest.json")
+        source_hash = sha256_file(dataset_path / "manifest.json")
+        plan = read_role_plan(role_plan_path, feature_manifest, source_manifest, feature_hash, source_hash)
+        historical_manifest = None
+    else:
+        plan = verify_historical_role_plan(role_plan_path, historical_root)
+        historical_manifest = json.loads((historical_root / "manifest.json").read_bytes())
+        feature_hash = sha256_file(historical_root / "manifest.json")
+        source_hash = historical_manifest["source_manifests"]["bulk_audit_sha256"]
+        feature_manifest = {"protocol_sha256": historical_manifest["adapter_configuration_sha256"]}
+        source_manifest = {"source_capture_set_sha256": None}
     training_manifest_path = training_path / "manifest.json"
     model_path = training_path / "model.json"
     trace_path = training_path / "training_trace.jsonl.zst"
@@ -72,6 +90,17 @@ def load_inputs(features_path: Path, dataset_path: Path, role_plan_path: Path,
             or training.get("role_plan_sha256") != sha256_file(role_plan_path)
             or training.get("feature_protocol_sha256") != feature_manifest.get("protocol_sha256")):
         raise ValueError("trained model is invalid or bound to different source/role-plan inputs")
+    if historical_manifest is not None:
+        expected_windows = [{"id": item["id"], "start_ns": item["start_ns"], "end_ns": item["end_ns"]}
+                            for item in plan["roles"]["train"]]
+        if (training.get("input_kind") != "audited_vision_historical"
+                or training.get("historical_input_manifest_sha256") != feature_hash
+                or training.get("historical_role_plan_fingerprint_sha256")
+                != plan.get("plan_fingerprint_sha256")
+                or training.get("train_windows") != expected_windows
+                or model.get("normalizer", {}).get("rows") != plan["totals"]["train"]):
+            raise ValueError("historical training artifact does not match Train-only role data")
+        plan = {"windows": plan["roles"], "historical": True}
     if (model.get("schema") != "td_market_data_usdm_rl_linear_policy"
             or model.get("version") != 1
             or model.get("action_target_lots") != list(ACTION_TARGETS_LOTS)):
@@ -85,16 +114,42 @@ def load_inputs(features_path: Path, dataset_path: Path, role_plan_path: Path,
 
 
 def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
-    feature_path = inputs["features"].resolve(strict=True)
+    historical_root = inputs.get("historical_inputs")
+    if historical_root is not None:
+        historical_root = historical_root.resolve(strict=True)
+        feature_path = historical_root
+        dataset_path = None
+    else:
+        feature_path = inputs["features"].resolve(strict=True)
+        dataset_path = inputs["dataset"].resolve(strict=True)
     role_plan_path = inputs["role_plan"].resolve(strict=True)
     training_path = inputs["training"].resolve(strict=True)
     feature_manifest, source_manifest, plan, training, model = load_inputs(
-        feature_path, inputs["dataset"].resolve(strict=True), role_plan_path, training_path)
-    evaluation_windows = {role: window for role, window in plan["windows"].items() if role != "train"}
+        None if historical_root is not None else feature_path, dataset_path, role_plan_path,
+        training_path, historical_root)
+    evaluation_windows = []
+    report_windows: dict[str, list[dict[str, int]]] = {}
+    if plan.get("historical"):
+        for role, windows in plan["windows"].items():
+            if role == "train" or role != inputs.get("evaluation_role", "validation"):
+                continue
+            for window in windows:
+                evaluation_windows.append((role, window,
+                    feature_path / window["features"]["path"],
+                    feature_path / window["ledger_inputs"]["path"]))
+                report_windows.setdefault(role, []).append({
+                    "start_ns": window["start_ns"], "end_ns": window["end_ns"]})
+    else:
+        for role, window in plan["windows"].items():
+            if role == "train" or role != inputs.get("evaluation_role", "validation"):
+                continue
+            evaluation_windows.append((role, window, feature_path / "features.jsonl",
+                                      feature_path / "ledger_inputs.jsonl"))
+            report_windows[role] = [{"start_ns": window["start_ns"], "end_ns": window["end_ns"]}]
     if not evaluation_windows:
         raise ValueError("role plan has no held-out evaluation windows")
     total_minutes = sum((window["end_ns"] - window["start_ns"]) // MINUTE_NS
-                        for window in evaluation_windows.values())
+                        for _, window, _, _ in evaluation_windows)
     seeds = inputs["seeds"]
     if not seeds or len(seeds) > MAX_EVALUATION_SEEDS or len(set(seeds)) != len(seeds):
         raise ValueError(f"provide 1..{MAX_EVALUATION_SEEDS} unique evaluation seeds")
@@ -124,7 +179,7 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
     if strategies != ["noop_flat_v1", "buy_and_hold_long_v1", "mark_momentum_15m_sign_v1"]:
         raise ValueError("baseline registry contains an unsupported or reordered strategy")
     results = []
-    for role, window in evaluation_windows.items():
+    for role, window, input_feature_path, input_ledger_path in evaluation_windows:
         for seed in seeds:
             for strategy in ["rl_policy_v1", *strategies]:
                 set_seed(seed)
@@ -148,23 +203,25 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
                     return action, None
 
                 experiences, stats = simulate_episode(
-                    feature_path / "features.jsonl", feature_path / "ledger_inputs.jsonl",
+                    input_feature_path, input_ledger_path,
                     window, select_action, fee_bps, slippage_bps, 4096,
                     collect_experiences=False)
                 results.append({"role": role, "seed": seed, "strategy": strategy,
+                                "window_id": window.get("id", role),
                                 "cost_scenario": {"fee_bps": fee_bps, "slippage_bps": slippage_bps},
                                 "metrics": stats})
     return {"schema": "td_market_data_usdm_rl_baseline_report", "version": 1,
             "factor_set_id": training["factor_set_id"],
             "factor_set_sha256": registry_sha256(),
-            "source_dataset_manifest_sha256": sha256_file(inputs["dataset"] / "manifest.json"),
+            "source_dataset_manifest_sha256": training["source_dataset_manifest_sha256"],
             "features_manifest_sha256": sha256_file(feature_path / "manifest.json"),
             "role_plan_sha256": sha256_file(role_plan_path),
             "training_manifest_sha256": sha256_file(training_path / "manifest.json"),
             "trained_model_sha256": training["model_sha256"],
             "baseline_registry_sha256": sha256_file(BASELINE_PATH),
             "evaluation_code_sha256": package_code_sha256(),
-            "evaluation_windows": evaluation_windows, "seeds": seeds,
+            "evaluation_role": inputs.get("evaluation_role", "validation"),
+            "evaluation_windows": report_windows, "seeds": seeds,
             "cost_scenario": {"fee_bps": fee_bps, "slippage_bps": slippage_bps},
             "accounting_protocol_sha256": training["feature_protocol_sha256"],
             "accounting": {"initial_equity_usdt": 10_000.0, "lot_size_btc": 0.001,
@@ -189,8 +246,10 @@ def create_report(args: Any) -> dict[str, Any]:
     reject_system_temp(output, "evaluation output")
     if output.resolve() == RELAY_ROOT or RELAY_ROOT in output.resolve().parents:
         raise ValueError("evaluation report must be stored outside the source repository")
-    inputs = {"features": args.features, "dataset": args.dataset, "role_plan": args.role_plan,
-              "training": args.training, "seeds": args.seeds}
+    inputs = {"features": args.features, "dataset": args.dataset,
+              "historical_inputs": args.historical_inputs, "role_plan": args.role_plan,
+              "training": args.training, "seeds": args.seeds,
+              "evaluation_role": args.evaluation_role}
     report = evaluate(inputs)
     output.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent))
@@ -256,8 +315,10 @@ def verify_report(args: Any) -> dict[str, Any]:
                   "evaluation_code_sha256", "factor_set_id", "factor_set_sha256"):
         if manifest.get(field) != report.get(field):
             raise ValueError(f"evaluation artifact manifest mismatch: {field}")
-    inputs = {"features": args.features, "dataset": args.dataset, "role_plan": args.role_plan,
-              "training": args.training, "seeds": report["seeds"]}
+    inputs = {"features": args.features, "dataset": args.dataset,
+              "historical_inputs": args.historical_inputs, "role_plan": args.role_plan,
+              "training": args.training, "seeds": report["seeds"],
+              "evaluation_role": report["evaluation_role"]}
     recomputed = evaluate(inputs)
     if sha256_file(report_path) != hashlib.sha256(
             json.dumps(recomputed, sort_keys=True, indent=2, allow_nan=False).encode() + b"\n").hexdigest():

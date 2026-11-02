@@ -41,6 +41,13 @@ offline_rl/.venv/bin/td-market-data-rl verify-run \
   --artifact /mnt/data/td-market-data-local/research-inputs/vision-historical-training-run-v2 \
   --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
   --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v3.json
+
+offline_rl/.venv/bin/td-market-data-rl evaluate \
+  --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v3.json \
+  --training /mnt/data/td-market-data-local/research-inputs/vision-historical-training-pilot-v1 \
+  --evaluation-role validation --seeds 101,202,303 \
+  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-validation-pilot-v1
 ```
 
 The builder checks archived Mark and aggregate-trade hashes against the bulk
@@ -95,5 +102,10 @@ verifier; do not pass it through the live Relay Dataset verifier or label it as
 a live-capture Dataset.
 
 The one-update run demonstrated data/training integration only. It is not a
-factor-quality result. Validation-only multi-seed comparisons and frozen
-Test/OOS evaluation remain subsequent phases.
+factor-quality result. The evaluator accepts an explicit role and defaults to
+Validation, so factor screening does not include Test/OOS. Its `--seeds` value
+controls stochastic action sampling for the already-trained policy; it does
+not create different training seeds. A factor-suite sweep must train each
+suite/seed combination separately before comparing Validation results.
+Frozen Test/OOS evaluation remains a later, one-time stage after factor and
+training settings are locked.
