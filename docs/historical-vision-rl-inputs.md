@@ -24,15 +24,15 @@ offline_rl/.venv/bin/python verify_vision_historical_rl_inputs.py \
 
 offline_rl/.venv/bin/td-market-data-rl historical-role-plan \
   --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
-  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v3.json
+  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json
 
 offline_rl/.venv/bin/td-market-data-rl verify-historical-role-plan \
   --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
-  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v3.json
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json
 
 offline_rl/.venv/bin/td-market-data-rl train \
   --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
-  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v3.json \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json \
   --device auto --updates 1 --seed 101 --factor-set raw_baseline_v1 \
   --fee-bps 10 --slippage-bps 5 --max-memory-mb 4096 --max-gpu-memory-mb 2048 \
   --output /mnt/data/td-market-data-local/research-inputs/vision-historical-training-run-v2
@@ -40,14 +40,26 @@ offline_rl/.venv/bin/td-market-data-rl train \
 offline_rl/.venv/bin/td-market-data-rl verify-run \
   --artifact /mnt/data/td-market-data-local/research-inputs/vision-historical-training-run-v2 \
   --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
-  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v3.json
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json
 
 offline_rl/.venv/bin/td-market-data-rl evaluate \
   --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
-  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v3.json \
-  --training /mnt/data/td-market-data-local/research-inputs/vision-historical-training-pilot-v1 \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json \
+  --training /mnt/data/td-market-data-local/research-inputs/vision-historical-training-run-v2 \
   --evaluation-role validation --seeds 101,202,303 \
   --output /mnt/data/td-market-data-local/research-inputs/vision-historical-validation-pilot-v1
+
+offline_rl/.venv/bin/td-market-data-rl validation-sweep \
+  --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json \
+  --training-seeds 101,202,303 --evaluation-seeds 101,202,303 \
+  --updates 1 --device auto --max-memory-mb 4096 --max-gpu-memory-mb 2048 \
+  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-factor-sweep-v1
+
+offline_rl/.venv/bin/td-market-data-rl verify-validation-sweep \
+  --artifact /mnt/data/td-market-data-local/research-inputs/vision-historical-factor-sweep-v1 \
+  --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json
 ```
 
 The builder checks archived Mark and aggregate-trade hashes against the bulk
@@ -101,7 +113,15 @@ and ignored by Git. The historical artifact has its own schema and independent
 verifier; do not pass it through the live Relay Dataset verifier or label it as
 a live-capture Dataset.
 
-The one-update run demonstrated data/training integration only. It is not a
+The `validation-sweep` command trains each registered local factor suite for
+every requested training seed, then scores those frozen artifacts on Validation
+only. It uses the same accounting, 10 bps fee, 5 bps adverse slippage, 1% trade
+participation, and position/notional limits as the current offline runner.
+NOOP, Buy-and-Hold, and frozen momentum baselines are evaluated with the same
+Validation ledger. The sweep artifact bundles its training artifacts and can
+recompute each Validation metric with `verify-validation-sweep`.
+
+The one-update pilot run demonstrated data/training integration only. It is not a
 factor-quality result. The evaluator accepts an explicit role and defaults to
 Validation, so factor screening does not include Test/OOS. Its `--seeds` value
 controls stochastic action sampling for the already-trained policy; it does

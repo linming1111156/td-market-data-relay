@@ -17,7 +17,8 @@ from .contracts import (MAX_TRAIN_MINUTES, MINUTE_NS, RELAY_ROOT,
 from .evaluator import create_report, verify_report
 from .factors import suites, registry_sha256
 from .historical import create_role_plan, verify_plan
-from .learner import train
+from .learner import train, trainer_code_sha256
+from .sweep import create_sweep, verify_sweep
 
 
 def parse_time(value: str) -> int:
@@ -43,6 +44,13 @@ def parse_seeds(value: str) -> list[int]:
     if not seeds or any(seed < 0 for seed in seeds):
         raise argparse.ArgumentTypeError("seeds must be nonnegative integers")
     return seeds
+
+
+def parse_factor_sets(value: str) -> list[str]:
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if not items or len(set(items)) != len(items):
+        raise argparse.ArgumentTypeError("factor sets must be a comma-separated unique list")
+    return items
 
 
 def role_plan(args: Any) -> dict[str, Any]:
@@ -122,7 +130,8 @@ def verify_run(args: Any) -> dict[str, Any]:
     if manifest.get("schema") != "td_market_data_usdm_rl_training" or manifest.get("version") != 1:
         raise ValueError("unsupported run manifest")
     if (sha256_file(artifact / "model.json") != manifest.get("model_sha256")
-            or sha256_file(artifact / "training_trace.jsonl.zst") != manifest.get("trace_sha256")):
+            or sha256_file(artifact / "training_trace.jsonl.zst") != manifest.get("trace_sha256")
+            or manifest.get("trainer_code_sha256") != trainer_code_sha256()):
         raise ValueError("run artifact file hash mismatch")
     factor_set_id = model.get("factor_set_id", "raw_baseline_v1")
     factor_names = suites().get(factor_set_id)
@@ -164,7 +173,7 @@ def verify_run(args: Any) -> dict[str, Any]:
             raise ValueError("historical verify-run requires --historical-inputs and --role-plan only")
         historical_root = args.historical_inputs.resolve(strict=True)
         plan_path = args.role_plan.resolve(strict=True)
-        plan = verify_plan(plan_path, historical_root)
+        plan = verify_plan(plan_path, historical_root, verify_input_artifact=False)
         historical_manifest = json.loads((historical_root / "manifest.json").read_bytes())
         manifest_hash = sha256_file(historical_root / "manifest.json")
         expected_train_windows = [
@@ -261,6 +270,28 @@ def make_parser() -> argparse.ArgumentParser:
     evaluation_verifier.add_argument("--training", type=Path, required=True)
     evaluation_verifier.add_argument("--evaluation-role", choices=("validation", "test", "oos"), default="validation")
     evaluation_verifier.set_defaults(func=verify_report)
+    sweep = commands.add_parser(
+        "validation-sweep", help="train candidate suites on Train and compare only on Validation")
+    sweep.add_argument("--historical-inputs", type=Path, required=True)
+    sweep.add_argument("--role-plan", type=Path, required=True)
+    sweep.add_argument("--factor-sets", type=parse_factor_sets,
+                       help="comma-separated local factor suite IDs; defaults to all registered suites")
+    sweep.add_argument("--training-seeds", type=parse_seeds, default=[101, 202, 303])
+    sweep.add_argument("--evaluation-seeds", type=parse_seeds, default=[101, 202, 303])
+    sweep.add_argument("--updates", type=int, default=1)
+    sweep.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
+    sweep.add_argument("--fee-bps", type=int, default=10)
+    sweep.add_argument("--slippage-bps", type=int, default=5)
+    sweep.add_argument("--max-memory-mb", type=int, default=4096)
+    sweep.add_argument("--max-gpu-memory-mb", type=int, default=2048)
+    sweep.add_argument("--output", type=Path, required=True)
+    sweep.set_defaults(func=create_sweep)
+    sweep_verifier = commands.add_parser(
+        "verify-validation-sweep", help="recompute run and baseline Validation metrics")
+    sweep_verifier.add_argument("--artifact", type=Path, required=True)
+    sweep_verifier.add_argument("--historical-inputs", type=Path, required=True)
+    sweep_verifier.add_argument("--role-plan", type=Path, required=True)
+    sweep_verifier.set_defaults(func=verify_sweep)
     return parser
 
 
@@ -281,6 +312,10 @@ def main() -> None:
     elif args.command == "evaluate":
         print(f"baseline comparison created: strategies=4 seeds={len(args.seeds)}")
         print(f"artifact: {args.output.resolve()}")
+    elif args.command == "validation-sweep":
+        print(f"Validation factor sweep created: {args.output.resolve()}")
+    elif args.command == "verify-validation-sweep":
+        print("Validation factor sweep verified by recomputing every held-out result")
     else:
         if args.command == "verify-run":
             print(f"training artifact valid: updates={result['updates']} transitions={result['transitions']}")

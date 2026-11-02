@@ -90,11 +90,13 @@ def build_payload(input_root: Path, verify_artifact: bool = True) -> dict[str, A
     return payload
 
 
-def verify_plan(plan_path: Path, input_root: Path) -> dict[str, Any]:
+def verify_plan(plan_path: Path, input_root: Path,
+                verify_input_artifact: bool = True) -> dict[str, Any]:
     if plan_path.is_symlink() or not plan_path.is_file():
         raise ValueError("historical role plan must be a regular file")
     input_root = input_root.resolve(strict=True)
-    verify_historical_inputs(input_root)
+    if verify_input_artifact:
+        verify_historical_inputs(input_root)
     manifest = json.loads((input_root / "manifest.json").read_bytes())
     plan = json.loads(plan_path.read_bytes())
     if not isinstance(plan, dict) or plan.get("schema") != PLAN_SCHEMA or plan.get("version") != 1:

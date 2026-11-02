@@ -57,7 +57,7 @@ def load_inputs(features_path: Path | None, dataset_path: Path | None, role_plan
         plan = read_role_plan(role_plan_path, feature_manifest, source_manifest, feature_hash, source_hash)
         historical_manifest = None
     else:
-        plan = verify_historical_role_plan(role_plan_path, historical_root)
+        plan = verify_historical_role_plan(role_plan_path, historical_root, verify_input_artifact=False)
         historical_manifest = json.loads((historical_root / "manifest.json").read_bytes())
         feature_hash = sha256_file(historical_root / "manifest.json")
         source_hash = historical_manifest["source_manifests"]["bulk_audit_sha256"]
@@ -134,6 +134,12 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
             if role == "train" or role != inputs.get("evaluation_role", "validation"):
                 continue
             for window in windows:
+                for path, entry in ((feature_path / window["features"]["path"], window["features"]),
+                                    (feature_path / window["ledger_inputs"]["path"], window["ledger_inputs"])):
+                    if (path.is_symlink() or not path.is_file()
+                            or path.stat().st_size != entry["size_bytes"]
+                            or sha256_file(path) != entry["sha256"]):
+                        raise ValueError(f"held-out historical shard hash mismatch: {path}")
                 evaluation_windows.append((role, window,
                     feature_path / window["features"]["path"],
                     feature_path / window["ledger_inputs"]["path"]))
@@ -178,10 +184,14 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
     strategies = [entry["id"] for entry in strategy_registry["strategies"]]
     if strategies != ["noop_flat_v1", "buy_and_hold_long_v1", "mark_momentum_15m_sign_v1"]:
         raise ValueError("baseline registry contains an unsupported or reordered strategy")
+    selected_strategies = inputs.get("strategies", ["rl_policy_v1", *strategies])
+    if (not selected_strategies or len(set(selected_strategies)) != len(selected_strategies)
+            or any(item not in {"rl_policy_v1", *strategies} for item in selected_strategies)):
+        raise ValueError("evaluation strategy filter contains an unknown or duplicate strategy")
     results = []
     for role, window, input_feature_path, input_ledger_path in evaluation_windows:
         for seed in seeds:
-            for strategy in ["rl_policy_v1", *strategies]:
+            for strategy in selected_strategies:
                 set_seed(seed)
                 rng = torch.Generator(device="cpu").manual_seed(seed)
 
@@ -206,6 +216,9 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
                     input_feature_path, input_ledger_path,
                     window, select_action, fee_bps, slippage_bps, 4096,
                     collect_experiences=False)
+                expected_minutes = window.get("minute_count", (window["end_ns"] - window["start_ns"]) // MINUTE_NS)
+                if stats["minutes"] != expected_minutes:
+                    raise ValueError(f"held-out window {window.get('id', role)} row count differs from role plan")
                 results.append({"role": role, "seed": seed, "strategy": strategy,
                                 "window_id": window.get("id", role),
                                 "cost_scenario": {"fee_bps": fee_bps, "slippage_bps": slippage_bps},
@@ -222,6 +235,7 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
             "evaluation_code_sha256": package_code_sha256(),
             "evaluation_role": inputs.get("evaluation_role", "validation"),
             "evaluation_windows": report_windows, "seeds": seeds,
+            "strategies": selected_strategies,
             "cost_scenario": {"fee_bps": fee_bps, "slippage_bps": slippage_bps},
             "accounting_protocol_sha256": training["feature_protocol_sha256"],
             "accounting": {"initial_equity_usdt": 10_000.0, "lot_size_btc": 0.001,
@@ -318,7 +332,8 @@ def verify_report(args: Any) -> dict[str, Any]:
     inputs = {"features": args.features, "dataset": args.dataset,
               "historical_inputs": args.historical_inputs, "role_plan": args.role_plan,
               "training": args.training, "seeds": report["seeds"],
-              "evaluation_role": report["evaluation_role"]}
+              "evaluation_role": report["evaluation_role"],
+              "strategies": report["strategies"]}
     recomputed = evaluate(inputs)
     if sha256_file(report_path) != hashlib.sha256(
             json.dumps(recomputed, sort_keys=True, indent=2, allow_nan=False).encode() + b"\n").hexdigest():

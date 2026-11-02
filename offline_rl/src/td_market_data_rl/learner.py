@@ -41,6 +41,16 @@ def jsonl(path: Path) -> Iterator[dict[str, Any]]:
             yield row
 
 
+def trainer_code_sha256() -> str:
+    digest = hashlib.sha256()
+    for source_file in sorted(Path(__file__).parent.glob("*.py")):
+        digest.update(source_file.name.encode() + b"\0")
+        with source_file.open("rb") as source_stream:
+            for chunk in iter(lambda: source_stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
 def fit_normalizer(path: Path, start: int, end: int) -> tuple[list[float], list[float], int]:
     _, means, scales, count = fit_factor_normalizer(path, start, end, "raw_baseline_v1")
     return means, scales, count
@@ -284,7 +294,7 @@ def train(args: Any) -> dict[str, Any]:
             raise ValueError("historical training cannot mix Relay capture inputs with Vision history")
         historical_root = historical_root.resolve(strict=True)
         reject_system_temp(historical_root, "historical input")
-        plan = verify_historical_role_plan(plan_path, historical_root)
+        plan = verify_historical_role_plan(plan_path, historical_root, verify_input_artifact=False)
         historical_manifest = json.loads((historical_root / "manifest.json").read_bytes())
         train_sources = training_windows(historical_root, plan)
         train_window = {"windows": [{"id": item["id"], "start_ns": item["start_ns"],
@@ -389,19 +399,23 @@ def train(args: Any) -> dict[str, Any]:
                     mean_return = float(returns.mean().item())
                     baseline = mean_return if not baseline_initialized else 0.9 * baseline + 0.1 * mean_return
                     baseline_initialized = True
-                    stats = {"minutes": sum(row["minutes"] for row in window_stats),
-                             "decisions": sum(row["decisions"] for row in window_stats),
-                             "fills": sum(row["fills"] for row in window_stats),
-                             "net_pnl_usdt": sum(row["net_pnl_usdt"] for row in window_stats),
-                             "ending_equity_usdt_per_window_mean": sum(row["ending_equity_usdt"] for row in window_stats) / len(window_stats),
-                             "max_drawdown_fraction_worst_window": min(row["max_drawdown_fraction"] for row in window_stats),
-                             "gross_price_pnl_usdt": sum(row["gross_price_pnl_usdt"] for row in window_stats),
-                             "funding_pnl_usdt": sum(row["funding_pnl_usdt"] for row in window_stats),
-                             "fees_usdt": sum(row["fees_usdt"] for row in window_stats),
-                             "slippage_usdt": sum(row["slippage_usdt"] for row in window_stats),
-                             "traded_btc": sum(row["traded_btc"] for row in window_stats),
-                             "traded_notional_usdt": sum(row["traded_notional_usdt"] for row in window_stats),
-                             "window_stats": window_stats}
+                    if len(window_stats) == 1:
+                        stats = {key: value for key, value in window_stats[0].items()
+                                 if key != "window_id"}
+                    else:
+                        stats = {"minutes": sum(row["minutes"] for row in window_stats),
+                                 "decisions": sum(row["decisions"] for row in window_stats),
+                                 "fills": sum(row["fills"] for row in window_stats),
+                                 "net_pnl_usdt": sum(row["net_pnl_usdt"] for row in window_stats),
+                                 "ending_equity_usdt_per_window_mean": sum(row["ending_equity_usdt"] for row in window_stats) / len(window_stats),
+                                 "max_drawdown_fraction_worst_window": min(row["max_drawdown_fraction"] for row in window_stats),
+                                 "gross_price_pnl_usdt": sum(row["gross_price_pnl_usdt"] for row in window_stats),
+                                 "funding_pnl_usdt": sum(row["funding_pnl_usdt"] for row in window_stats),
+                                 "fees_usdt": sum(row["fees_usdt"] for row in window_stats),
+                                 "slippage_usdt": sum(row["slippage_usdt"] for row in window_stats),
+                                 "traded_btc": sum(row["traded_btc"] for row in window_stats),
+                                 "traded_notional_usdt": sum(row["traded_notional_usdt"] for row in window_stats),
+                                 "window_stats": window_stats}
                     stats.update({"update": update + 1, "loss": float(loss.item()),
                                   "return_mean": mean_return, "baseline": baseline})
                     episode_stats.append(stats)
@@ -409,12 +423,6 @@ def train(args: Any) -> dict[str, Any]:
                     line = canonical(stats) + b"\n"
                     compressed.write(line)
                     trace_digest.update(line)
-        code_digest = hashlib.sha256()
-        for source_file in sorted(Path(__file__).parent.glob("*.py")):
-            code_digest.update(source_file.name.encode() + b"\0")
-            with source_file.open("rb") as source_stream:
-                for chunk in iter(lambda: source_stream.read(1024 * 1024), b""):
-                    code_digest.update(chunk)
         model = {"schema": "td_market_data_usdm_rl_linear_policy", "version": 1,
                  "feature_names": factor_names, "factor_set_id": args.factor_set,
                  "factor_set_sha256": registry_sha256(),
@@ -435,7 +443,7 @@ def train(args: Any) -> dict[str, Any]:
                                   "end_ns": item["end_ns"]} for item in train_sources],
                "source_capture_set_sha256": source_manifest.get("source_capture_set_sha256"),
                "feature_protocol_sha256": feature_protocol_sha256,
-               "trainer_code_sha256": code_digest.hexdigest(),
+               "trainer_code_sha256": trainer_code_sha256(),
                "role": "train", "train_window": train_window,
                "factor_set_id": args.factor_set, "factor_set_sha256": registry_sha256(),
                "algorithm": {"name": "linear_categorical_reinforce", "gamma": 0.99,
