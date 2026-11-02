@@ -212,6 +212,13 @@ coverage for every held-out role, seed, and strategy. `verify-evaluation`
 recomputes the report and compares its hash, so repeatability is checked against
 the original fixed inputs and pinned runtime.
 
+By default, `rl_policy_v1` samples from the categorical policy at inference.
+To compare that behavior with deterministic highest-probability actions, pass
+`--strategies rl_policy_v1,rl_policy_argmax_v1,noop_flat_v1`. The argmax mode
+uses the same frozen model and feasibility mask but does not sample. The
+inference-mode Validation report for the current frozen MLP is documented in
+[`docs/first-principles-strategy-audit-20261102.md`](docs/first-principles-strategy-audit-20261102.md).
+
 For Vision factor screening, `validation-sweep` trains each factor suite on
 Train and creates seed-specific candidate artifacts. Then the standalone
 `offline_rl/scripts/validation_seed_matrix.py` evaluates every trained model
@@ -241,6 +248,7 @@ uv run --project offline_rl python offline_rl/scripts/validation_seed_matrix.py 
 - The policy is deliberately small and reuses the previously frozen
   REINFORCE baseline semantics. Candidate inputs remain research hypotheses,
   not established predictors or trading advice.
-- The short end-to-end capture is only a pipeline smoke sample. It is too short
-  to rank factor suites; wait for a longer fixed Dataset and keep Test/OOS
-  windows untouched until a factor choice is frozen.
+- The current MLP candidate failed its one-time Test comparison and is not a
+  trading candidate. Test has been consumed; OOS remains untouched until a new
+  candidate is frozen. The short end-to-end capture is only a pipeline smoke
+  sample and is too short to rank factor suites.

@@ -184,9 +184,10 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
     strategies = [entry["id"] for entry in strategy_registry["strategies"]]
     if strategies != ["noop_flat_v1", "buy_and_hold_long_v1", "mark_momentum_15m_sign_v1"]:
         raise ValueError("baseline registry contains an unsupported or reordered strategy")
-    selected_strategies = inputs.get("strategies", ["rl_policy_v1", *strategies])
+    selected_strategies = inputs.get("strategies") or ["rl_policy_v1", *strategies]
     if (not selected_strategies or len(set(selected_strategies)) != len(selected_strategies)
-            or any(item not in {"rl_policy_v1", *strategies} for item in selected_strategies)):
+            or any(item not in {"rl_policy_v1", "rl_policy_argmax_v1", *strategies}
+                   for item in selected_strategies)):
         raise ValueError("evaluation strategy filter contains an unknown or duplicate strategy")
     results = []
     for role, window, input_feature_path, input_ledger_path in evaluation_windows:
@@ -210,8 +211,11 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
                     mask = feasible_action_mask(feature.get("mark_price"), position)
                     with torch.inference_mode():
                         logits = apply_action_mask(actor(torch.tensor(vector, dtype=torch.float32)), mask)
-                        probabilities = torch.softmax(logits, dim=0)
-                        action = int(torch.multinomial(probabilities, 1, generator=rng).item())
+                        if selected == "rl_policy_argmax_v1":
+                            action = int(logits.argmax().item())
+                        else:
+                            probabilities = torch.softmax(logits, dim=0)
+                            action = int(torch.multinomial(probabilities, 1, generator=rng).item())
                     return action, None, mask
 
                 experiences, stats = simulate_episode(
@@ -265,7 +269,8 @@ def create_report(args: Any) -> dict[str, Any]:
     inputs = {"features": args.features, "dataset": args.dataset,
               "historical_inputs": args.historical_inputs, "role_plan": args.role_plan,
               "training": args.training, "seeds": args.seeds,
-              "evaluation_role": args.evaluation_role}
+              "evaluation_role": args.evaluation_role,
+              "strategies": args.strategies}
     report = evaluate(inputs)
     output.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent))

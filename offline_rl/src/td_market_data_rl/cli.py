@@ -54,6 +54,13 @@ def parse_factor_sets(value: str) -> list[str]:
     return items
 
 
+def parse_strategy_ids(value: str) -> list[str]:
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if not items or len(set(items)) != len(items):
+        raise argparse.ArgumentTypeError("strategies must be a comma-separated unique list")
+    return items
+
+
 def role_plan(args: Any) -> dict[str, Any]:
     features, dataset = args.features.resolve(strict=True), args.dataset.resolve(strict=True)
     reject_system_temp(features, "feature input")
@@ -282,6 +289,10 @@ def make_parser() -> argparse.ArgumentParser:
     evaluator.add_argument("--role-plan", type=Path, required=True)
     evaluator.add_argument("--training", type=Path, required=True)
     evaluator.add_argument("--seeds", type=parse_seeds, default=[101, 202, 303])
+    evaluator.add_argument("--strategies", type=parse_strategy_ids,
+                           help="comma-separated strategies: rl_policy_v1 (sampled), "
+                                "rl_policy_argmax_v1, noop_flat_v1, buy_and_hold_long_v1, "
+                                "mark_momentum_15m_sign_v1")
     evaluator.add_argument("--evaluation-role", choices=("validation", "test", "oos"), default="validation")
     evaluator.add_argument("--output", type=Path, required=True)
     evaluator.set_defaults(func=create_report)
@@ -337,7 +348,8 @@ def main() -> None:
         print(f"offline RL training complete: device={result['selected_device']} updates={result['updates']} transitions={result['transitions']}")
         print(f"artifact: {args.output.resolve()}")
     elif args.command == "evaluate":
-        print(f"baseline comparison created: strategies=4 seeds={len(args.seeds)}")
+        strategy_count = len(args.strategies) if args.strategies else 4
+        print(f"baseline comparison created: strategies={strategy_count} seeds={len(args.seeds)}")
         print(f"artifact: {args.output.resolve()}")
     elif args.command == "validation-sweep":
         print(f"Validation factor sweep created: {args.output.resolve()}")

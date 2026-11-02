@@ -5,8 +5,9 @@
 This audit covers the isolated historical RL path in `td-market-data-relay`:
 audited Train/Validation inputs, seven raw causal features and their local
 derived factors, 15-minute policy decisions, target-position actions, simulated
-fills, account rewards, and frozen baselines. Test/OOS rows were not read. The
-old `td-gateway` project was not used.
+fills, account rewards, and frozen baselines. Initial factor selection used
+Train/Validation; the later one-time frozen Test result is recorded below.
+OOS was not read. The old `td-gateway` project was not used.
 
 The current six factor suites have not produced a Validation candidate that
 beats NOOP on average. That is evidence against the **current complete setup**;
@@ -190,6 +191,24 @@ The create-only freeze record and verified evaluation artifact are under
 - Test report SHA-256: `4bd516c5a28db3d659f94a69233a2d31e87637b0241a77108341b29cc2d0bc1b`
 - Test artifact manifest SHA-256: `0d98b44ec75059e20bb15d5b8e51cce21232f1751ee423226110bdcefb18ebe4`
 
+## Inference-mode diagnostic on Validation
+
+To isolate whether inference-time sampling explains the turnover, the same
+frozen MLP (training seed 101) was evaluated on Validation with stochastic
+sampling, deterministic highest-probability actions, and NOOP. No model was
+retrained. Across action-sampling seeds 101, 202, and 303, stochastic
+inference returned −5.574% on average with about 4,814 fills, `$369,877`
+turnover, and gross price P&L of −`$2.58`. Deterministic inference returned
+−4.194%, with 3,624 fills, `$278,863` turnover, and gross price P&L of
+−`$0.94`. NOOP returned 0%. Thus stochastic sampling adds churn and cost, but
+removing it does not reveal a profitable signal: both policy modes have
+near-zero gross P&L and lose to staying flat after costs. This was an
+inference-only diagnostic on Validation, not a new Test/OOS run.
+
+Verified report:
+`/mnt/data/td-market-data-local/research-inputs/vision-historical-frozen-candidate-inference-modes-validation-v1/report.json`
+(SHA-256 `4a1efea44fec57e7c54a62bcc4913ac4f6b203910883bd2bc1cec32fbe709034`).
+
 ## Evidence references
 
 All reports below are on `/mnt/data/td-market-data-local/research-inputs` and
@@ -207,4 +226,5 @@ are create-only artifacts:
   `ae48eb5f9529c57092fe11530cbbbdeeb4b82313a94fcf1e74703420a617253b`
 
 The conservative Validation artifact was independently verified by recomputing
-all 54 model/prior replays. No Test/OOS rows were read.
+all 54 model/prior replays. The separate inference-mode report was also
+verified by recomputing every Validation result. OOS remains unread.
