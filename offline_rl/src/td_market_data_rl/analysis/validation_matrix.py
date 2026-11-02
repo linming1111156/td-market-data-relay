@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing
 import os
 import shutil
 import tempfile
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from statistics import mean, pstdev
 from types import SimpleNamespace
@@ -17,6 +19,7 @@ from ..sweep import verify_sweep
 
 
 MATRIX_SCHEMA = "td_market_data_usdm_rl_validation_seed_matrix"
+MAX_EVALUATION_WORKERS = 4
 
 
 def sha256_file(path: Path) -> str:
@@ -29,6 +32,21 @@ def sha256_file(path: Path) -> str:
 
 def canonical(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+
+
+def _initialize_evaluation_worker() -> None:
+    import torch
+
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+
+
+def _evaluate_task(task: dict[str, Any]) -> dict[str, Any]:
+    return evaluate({"features": None, "dataset": None,
+                     "historical_inputs": task["historical_inputs"],
+                     "role_plan": task["role_plan"], "training": task["training"],
+                     "seeds": task["seeds"], "evaluation_role": "validation",
+                     "strategies": ["rl_policy_v1"]})
 
 
 def _summary(results: list[dict[str, Any]], baseline_results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -66,18 +84,23 @@ def _summary(results: list[dict[str, Any]], baseline_results: list[dict[str, Any
 def _run_matrix(source: Path, input_root: Path, role_plan: Path) -> dict[str, Any]:
     source_report = json.loads((source / "report.json").read_bytes())
     run_by_key = {(item["factor_set_id"], item["seed"]): item for item in source_report["training_runs"]}
-    results = []
+    tasks = []
+    task_metadata = []
     for factor_set in source_report["factor_sets"]:
         for training_seed in source_report["training_seeds"]:
             run_item = run_by_key[(factor_set, training_seed)]
-            training_path = source / run_item["path"]
-            report = evaluate({"features": None, "dataset": None,
-                               "historical_inputs": input_root, "role_plan": role_plan,
-                               "training": training_path,
-                               "seeds": source_report["evaluation_seeds"],
-                               "evaluation_role": "validation",
-                               "strategies": ["rl_policy_v1"]})
-            for evaluation_row in report["results"]:
+            tasks.append({"historical_inputs": input_root, "role_plan": role_plan,
+                          "training": source / run_item["path"],
+                          "seeds": source_report["evaluation_seeds"]})
+            task_metadata.append((factor_set, training_seed, run_item))
+    results = []
+    worker_count = min(MAX_EVALUATION_WORKERS, len(tasks))
+    with ProcessPoolExecutor(max_workers=worker_count,
+                             mp_context=multiprocessing.get_context("spawn"),
+                             initializer=_initialize_evaluation_worker) as executor:
+        reports = list(executor.map(_evaluate_task, tasks))
+    for (factor_set, training_seed, run_item), report in zip(task_metadata, reports, strict=True):
+        for evaluation_row in report["results"]:
                 results.append({"factor_set_id": factor_set,
                                 "training_seed": training_seed,
                                 "evaluation_seed": evaluation_row["seed"],
@@ -103,6 +126,7 @@ def _run_matrix(source: Path, input_root: Path, role_plan: Path) -> dict[str, An
             "factor_sets": source_report["factor_sets"],
             "training_seeds": source_report["training_seeds"],
             "evaluation_seeds": source_report["evaluation_seeds"],
+            "parallel_evaluation_workers": worker_count,
             "updates": source_report["updates"],
             "cost_scenario": source_report["cost_scenario"],
             "accounting": source_report["accounting"],
@@ -222,17 +246,26 @@ def verify_matrix(args: Any) -> dict[str, Any]:
               for item in report["validation_results"]}
     if actual != expected_windows or len(report["validation_results"]) != len(expected_windows):
         raise ValueError("Validation matrix does not cover each training/evaluation seed combination")
-    evaluation_code_hashes = set()
+    evaluation_jobs = []
     for key, run_item in run_by_key.items():
         training = source / run_item["path"]
-        verified = verify_run(SimpleNamespace(artifact=training, historical_inputs=input_root,
-                                               role_plan=role_plan, dataset=None, features=None))
+        verify_run(SimpleNamespace(artifact=training, historical_inputs=input_root,
+                                   role_plan=role_plan, dataset=None, features=None))
         if sha256_file(training / "manifest.json") != run_item["manifest_sha256"]:
             raise ValueError("source sweep training manifest hash mismatch")
-        evaluation = evaluate({"features": None, "dataset": None,
-                               "historical_inputs": input_root, "role_plan": role_plan,
-                               "training": training, "seeds": report["evaluation_seeds"],
-                               "evaluation_role": "validation", "strategies": ["rl_policy_v1"]})
+        evaluation_jobs.append((key, run_item, {
+            "historical_inputs": input_root, "role_plan": role_plan,
+            "training": training, "seeds": report["evaluation_seeds"]}))
+    worker_count = min(MAX_EVALUATION_WORKERS, len(evaluation_jobs))
+    if report.get("parallel_evaluation_workers") != worker_count:
+        raise ValueError("Validation matrix parallel worker count differs from the bounded policy")
+    with ProcessPoolExecutor(max_workers=worker_count,
+                             mp_context=multiprocessing.get_context("spawn"),
+                             initializer=_initialize_evaluation_worker) as executor:
+        recomputed_reports = list(executor.map(_evaluate_task,
+                                               [item[2] for item in evaluation_jobs]))
+    evaluation_code_hashes = set()
+    for (key, run_item, _task), evaluation in zip(evaluation_jobs, recomputed_reports, strict=True):
         evaluation_code_hashes.add(evaluation["evaluation_code_sha256"])
         by_seed_window = {(row["seed"], row["window_id"]): row for row in evaluation["results"]}
         for eval_seed in report["evaluation_seeds"]:
