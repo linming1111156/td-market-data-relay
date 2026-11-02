@@ -66,8 +66,9 @@ uv run td-market-data-rl verify-run \
   --features /data/td-market-data-usdm-rl-features/BTCUSDT-fixed-v1
 ```
 
-The baseline algorithm is a three-action linear categorical REINFORCE policy.
-Its eight inputs are the seven frozen causal features plus current position
+The policy is a three-action categorical REINFORCE model. The default
+architecture is linear; `--architecture mlp_tanh8` selects a single 8-unit
+`tanh` hidden layer. Inputs are the selected factors plus current position
 measured in 0.001 BTC lots. The normalizer is fit on Train rows only. Decisions
 occur every 15 minutes; the episode simulator accounts for mark PnL, finalized
 funding, trade participation, the frozen notional/position caps, fees, and
@@ -89,6 +90,38 @@ The artifact contains a JSON model, compressed per-update trace, and manifest
 with input hashes, role-plan hash, trainer-code hash, cost settings, seed,
 resource limits, selected device, fallback reason, and summary statistics. It
 is a research artifact, not a production model or trading authorization.
+
+To isolate the effect of a small nonlinear policy, compare it with the linear
+policy on the same raw seven-feature suite, fixed seeds, updates, learning
+rate, costs, role plan, and risk ledger. Each command writes an independent,
+create-only Validation artifact under `/mnt/data`:
+
+```sh
+TMPDIR=/mnt/data/td-market-data-local/research-inputs/.tmp \
+offline_rl/.venv/bin/td-market-data-rl validation-sweep \
+  --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json \
+  --factor-sets raw_baseline_v1 --architecture linear --learning-rate 3 \
+  --training-seeds 101,202,303 --evaluation-seeds 101,202,303 --updates 20 \
+  --device auto --fee-bps 10 --slippage-bps 5 \
+  --max-memory-mb 4096 --max-gpu-memory-mb 2048 \
+  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-raw-linear-lr3-v1
+
+TMPDIR=/mnt/data/td-market-data-local/research-inputs/.tmp \
+offline_rl/.venv/bin/td-market-data-rl validation-sweep \
+  --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json \
+  --factor-sets raw_baseline_v1 --architecture mlp_tanh8 --learning-rate 3 \
+  --training-seeds 101,202,303 --evaluation-seeds 101,202,303 --updates 20 \
+  --device auto --fee-bps 10 --slippage-bps 5 \
+  --max-memory-mb 4096 --max-gpu-memory-mb 2048 \
+  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-raw-mlp-tanh8-lr3-v1
+```
+
+Verify each artifact with `td-market-data-rl verify-validation-sweep`, using the
+same historical inputs and role plan. Validation is for model selection only;
+Test/OOS remains reserved until the architecture and training settings are
+frozen.
 
 ## Inspect Train-only factor signal strength
 

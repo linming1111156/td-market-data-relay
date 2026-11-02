@@ -20,8 +20,13 @@ struct Request {
     factor_names: Vec<String>,
     means: Vec<f64>,
     scales: Vec<f64>,
+    architecture: String,
     weights: Vec<Vec<f64>>,
     bias: Vec<f64>,
+    #[serde(default)]
+    hidden_weights: Vec<Vec<f64>>,
+    #[serde(default)]
+    hidden_bias: Vec<f64>,
     seed: u64,
     fee_bps: f64,
     slippage_bps: f64,
@@ -208,22 +213,38 @@ fn xorshift64star(state: &mut u64) -> f64 {
 }
 
 fn choose(state: &[f64], request: &Request, rng: &mut u64) -> Result<u8, String> {
-    if request.weights.len() != 3
-        || request.bias.len() != 3
-        || request.weights.iter().any(|row| row.len() != state.len())
-    {
-        return Err("policy parameter dimensions do not match selected factors".into());
-    }
-    let logits: Vec<f64> = request
-        .weights
-        .iter()
-        .zip(&request.bias)
-        .map(|(row, bias)| {
-            row.iter()
-                .zip(state)
-                .fold(*bias, |sum, (weight, input)| sum + weight * input)
-        })
-        .collect();
+    let logits = match request.architecture.as_str() {
+        "linear" => {
+            if request.weights.len() != 3
+                || request.bias.len() != 3
+                || request.weights.iter().any(|row| row.len() != state.len())
+            {
+                return Err("linear policy dimensions do not match selected factors".into());
+            }
+            request.weights.iter().zip(&request.bias).map(|(row, bias)| {
+                row.iter().zip(state).fold(*bias, |sum, (weight, input)| sum + weight * input)
+            }).collect::<Vec<_>>()
+        }
+        "mlp_tanh8" => {
+            if request.hidden_weights.len() != 8
+                || request.hidden_bias.len() != 8
+                || request.hidden_weights.iter().any(|row| row.len() != state.len())
+                || request.weights.len() != 3
+                || request.weights.iter().any(|row| row.len() != 8)
+                || request.bias.len() != 3
+            {
+                return Err("MLP policy dimensions do not match selected factors".into());
+            }
+            let hidden: Vec<f64> = request.hidden_weights.iter().zip(&request.hidden_bias)
+                .map(|(row, bias)| row.iter().zip(state)
+                    .fold(*bias, |sum, (weight, input)| sum + weight * input).tanh())
+                .collect();
+            request.weights.iter().zip(&request.bias).map(|(row, bias)| {
+                row.iter().zip(&hidden).fold(*bias, |sum, (weight, input)| sum + weight * input)
+            }).collect()
+        }
+        _ => return Err("unsupported policy architecture".into()),
+    };
     let maximum = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let probabilities: Vec<f64> = logits.iter().map(|value| (value - maximum).exp()).collect();
     let total: f64 = probabilities.iter().sum();
@@ -594,7 +615,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     )
     .map_err(|e| format!("parse replay request: {e}"))?;
     if request.schema != "td_market_data_training_replay_request"
-        || request.version != 1
+        || request.version != 2
         || request.windows.is_empty()
         || request.factor_names.is_empty()
         || request.factor_names.len() != request.means.len()
@@ -627,7 +648,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         );
     }
     windows.sort_by(|a, b| a.experiences_path.cmp(&b.experiences_path));
-    let report = serde_json::json!({"schema":"td_market_data_training_replay_result","version":1,
+    let report = serde_json::json!({"schema":"td_market_data_training_replay_result","version":2,
         "rng":"xorshift64star-v1","workers":windows.len(),"windows":windows});
     let mut file = File::create(&report_path).map_err(|e| format!("create replay report: {e}"))?;
     serde_json::to_writer_pretty(&mut file, &report)

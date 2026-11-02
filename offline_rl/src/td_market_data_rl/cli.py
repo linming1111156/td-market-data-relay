@@ -18,6 +18,7 @@ from .evaluator import create_report, verify_report
 from .factors import suites, registry_sha256
 from .historical import create_role_plan, verify_plan
 from .learner import train, trainer_code_sha256
+from .policy import ARCHITECTURES
 from .sweep import create_sweep, verify_sweep
 
 
@@ -135,17 +136,37 @@ def verify_run(args: Any) -> dict[str, Any]:
         raise ValueError("run artifact file hash mismatch")
     factor_set_id = model.get("factor_set_id", "raw_baseline_v1")
     factor_names = suites().get(factor_set_id)
+    architecture = model.get("architecture", "linear")
     if (factor_names is None or model.get("feature_names") != factor_names
-            or len(model.get("weights", [])) != 3):
+            or architecture not in ARCHITECTURES
+            or model.get("schema") not in ("td_market_data_usdm_rl_linear_policy",
+                                             "td_market_data_usdm_rl_policy")):
         raise ValueError("model factor-set/action shape invalid")
     if (model.get("factor_set_sha256", registry_sha256()) != registry_sha256()
             or manifest.get("factor_set_id", "raw_baseline_v1") != factor_set_id
             or manifest.get("factor_set_sha256", registry_sha256()) != registry_sha256()):
         raise ValueError("model factor-set registry hash mismatch")
-    rows = model["weights"]
-    if (any(len(row) != len(factor_names) + 1 or any(not math.isfinite(value) for value in row) for row in rows)
-            or len(model.get("bias", [])) != 3
-            or any(not math.isfinite(value) for value in model["bias"])):
+    if architecture == "linear":
+        rows, biases = model.get("weights", []), model.get("bias", [])
+        valid_parameters = (len(rows) == 3
+                            and all(len(row) == len(factor_names) + 1
+                                    and all(math.isfinite(value) for value in row) for row in rows)
+                            and len(biases) == 3
+                            and all(math.isfinite(value) for value in biases))
+    else:
+        hidden, hidden_bias = model.get("hidden_weights", []), model.get("hidden_bias", [])
+        rows, biases = model.get("output_weights", []), model.get("output_bias", [])
+        valid_parameters = (len(hidden) == 8
+                            and all(len(row) == len(factor_names) + 1
+                                    and all(math.isfinite(value) for value in row) for row in hidden)
+                            and len(hidden_bias) == 8
+                            and all(math.isfinite(value) for value in hidden_bias)
+                            and len(rows) == 3
+                            and all(len(row) == 8 and all(math.isfinite(value) for value in row)
+                                    for row in rows)
+                            and len(biases) == 3
+                            and all(math.isfinite(value) for value in biases))
+    if not valid_parameters:
         raise ValueError("model parameters are malformed")
     count = 0
     trace_digest = hashlib.sha256()
@@ -227,7 +248,7 @@ def make_parser() -> argparse.ArgumentParser:
     historical_role_verifier.set_defaults(
         func=lambda args: verify_plan(args.role_plan.resolve(strict=True),
                                       args.historical_inputs.resolve(strict=True)))
-    learner = commands.add_parser("train", help="train the linear categorical policy on Train only")
+    learner = commands.add_parser("train", help="train a categorical policy on Train only")
     learner.add_argument("--features", type=Path)
     learner.add_argument("--dataset", type=Path)
     learner.add_argument("--historical-inputs", type=Path,
@@ -239,6 +260,9 @@ def make_parser() -> argparse.ArgumentParser:
     learner.add_argument("--seed", type=int, default=101)
     learner.add_argument("--factor-set", choices=sorted(suites()), default="raw_baseline_v1",
                          help="predeclared causal factor suite; compare suites as separate runs")
+    learner.add_argument("--architecture", choices=ARCHITECTURES, default="linear")
+    learner.add_argument("--learning-rate", type=float,
+                         help="override architecture default; recorded in the run manifest")
     learner.add_argument("--fee-bps", type=int, default=10)
     learner.add_argument("--slippage-bps", type=int, default=5)
     learner.add_argument("--max-memory-mb", type=int, default=4096)
@@ -276,6 +300,9 @@ def make_parser() -> argparse.ArgumentParser:
     sweep.add_argument("--role-plan", type=Path, required=True)
     sweep.add_argument("--factor-sets", type=parse_factor_sets,
                        help="comma-separated local factor suite IDs; defaults to all registered suites")
+    sweep.add_argument("--architecture", choices=ARCHITECTURES, default="linear")
+    sweep.add_argument("--learning-rate", type=float,
+                       help="override architecture default; recorded in the sweep report")
     sweep.add_argument("--training-seeds", type=parse_seeds, default=[101, 202, 303])
     sweep.add_argument("--evaluation-seeds", type=parse_seeds, default=[101, 202, 303])
     sweep.add_argument("--updates", type=int, default=1)

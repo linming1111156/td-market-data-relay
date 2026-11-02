@@ -24,6 +24,7 @@ from .contracts import (ACTION_TARGETS_LOTS, LOT_BTC, RELAY_ROOT,
                         sha256_file)
 from .factors import selected_factor_values, suites, registry_sha256
 from .historical import training_windows, verify_plan as verify_historical_role_plan
+from .policy import ARCHITECTURES, build_actor, initialize_actor, serialize_actor
 
 
 def jsonl(path: Path) -> Iterator[dict[str, Any]]:
@@ -148,7 +149,8 @@ def prepare_historical_cache(train_sources: list[dict[str, Any]], stage: Path) -
 def replay_historical_rust(stage: Path, update: int, train_sources: list[dict[str, Any]],
                            cache_root: Path,
                            factor_names: list[str], means: list[float], scales: list[float],
-                           actor: torch.nn.Linear, seed: int, fee_bps: int,
+                           actor: torch.nn.Module, architecture: str,
+                           seed: int, fee_bps: int,
                            slippage_bps: int, memory_limit_mb: int
                            ) -> tuple[list[tuple[np.ndarray, np.ndarray, np.ndarray]], list[dict[str, Any]]]:
     """Run ordered, per-window accounting in the Rust engine.
@@ -165,16 +167,22 @@ def replay_historical_rust(stage: Path, update: int, train_sources: list[dict[st
     request_path = work / "request.json"
     report_path = work / "report.json"
     engine_output = work / "experiences"
-    parameter_weights = actor.weight.detach().cpu().tolist()
-    parameter_bias = actor.bias.detach().cpu().tolist()
+    parameters = serialize_actor(actor, architecture)
+    if architecture == "linear":
+        weights, bias = parameters["weights"], parameters["bias"]
+        hidden_weights, hidden_bias = [], []
+    else:
+        weights, bias = parameters["output_weights"], parameters["output_bias"]
+        hidden_weights, hidden_bias = parameters["hidden_weights"], parameters["hidden_bias"]
     request = {
-        "schema": "td_market_data_training_replay_request", "version": 1,
+        "schema": "td_market_data_training_replay_request", "version": 2,
         "windows": [{"id": item["id"],
                      "minute_count": (item["end_ns"] - item["start_ns"]) // MINUTE_NS,
                      "cache_path": str(cache_root / f"window-{index:02}.tdcache")}
                     for index, item in enumerate(train_sources)],
         "factor_names": factor_names, "means": means, "scales": scales,
-        "weights": parameter_weights, "bias": parameter_bias,
+        "architecture": architecture, "weights": weights, "bias": bias,
+        "hidden_weights": hidden_weights, "hidden_bias": hidden_bias,
         "seed": int(seed + update), "fee_bps": float(fee_bps),
         "slippage_bps": float(slippage_bps),
         "memory_limit_mb": memory_limit_mb,
@@ -188,7 +196,7 @@ def replay_historical_rust(stage: Path, update: int, train_sources: list[dict[st
         raise ValueError(f"Rust historical replay failed: {error.stderr.strip()}") from error
     report = json.loads(report_path.read_bytes())
     if (report.get("schema") != "td_market_data_training_replay_result"
-            or report.get("version") != 1
+            or report.get("version") != 2
             or len(report.get("windows", [])) != len(train_sources)):
         raise ValueError("Rust replay engine returned an invalid report")
     by_id = {item["id"]: item for item in train_sources}
@@ -566,11 +574,18 @@ def train(args: Any) -> dict[str, Any]:
         normalizer_paths, args.factor_set)
     device, fallback = select_device(args.device, args.max_gpu_memory_mb)
     set_seed(args.seed)
-    actor = torch.nn.Linear(len(factor_names) + 1, len(ACTION_TARGETS_LOTS), bias=True, device=device)
-    torch.nn.init.zeros_(actor.weight)
-    torch.nn.init.zeros_(actor.bias)
+    architecture = getattr(args, "architecture", "linear")
+    if architecture not in ARCHITECTURES:
+        raise ValueError(f"unsupported policy architecture: {architecture}")
+    actor = build_actor(architecture, len(factor_names) + 1, device)
+    initialize_actor(actor, architecture)
     historical_training = historical_manifest is not None
-    learning_rate = 30.0 if historical_training else 0.1
+    default_learning_rate = ((30.0 if architecture == "linear" else 3.0)
+                             if historical_training else 0.1)
+    requested_learning_rate = getattr(args, "learning_rate", None)
+    learning_rate = default_learning_rate if requested_learning_rate is None else requested_learning_rate
+    if not math.isfinite(learning_rate) or learning_rate <= 0 or learning_rate > 100:
+        raise ValueError("learning rate must be finite and in (0,100]")
     optimizer = torch.optim.SGD(actor.parameters(), lr=learning_rate)
     entropy_bonus = 0.0
     baseline = 0.0
@@ -593,7 +608,7 @@ def train(args: Any) -> dict[str, Any]:
                         episode_experiences, window_stats = replay_historical_rust(
                             stage, update, train_sources, replay_cache_root,
                             factor_names, means, scales,
-                            actor, args.seed, args.fee_bps, args.slippage_bps,
+                            actor, architecture, args.seed, args.fee_bps, args.slippage_bps,
                             args.max_memory_mb)
                     else:
                         episode_experiences, window_stats = [], []
@@ -701,13 +716,15 @@ def train(args: Any) -> dict[str, Any]:
                     line = canonical(stats) + b"\n"
                     compressed.write(line)
                     trace_digest.update(line)
-        model = {"schema": "td_market_data_usdm_rl_linear_policy", "version": 1,
+        model = {"schema": "td_market_data_usdm_rl_policy", "version": 2,
                  "feature_names": factor_names, "factor_set_id": args.factor_set,
                  "factor_set_sha256": registry_sha256(),
+                 "architecture": architecture,
                  "position_state": "current_position_lots in [-1,0,1]",
-                 "action_target_lots": list(ACTION_TARGETS_LOTS), "weights": actor.weight.detach().cpu().tolist(),
-                 "bias": actor.bias.detach().cpu().tolist(), "normalizer": {"fit_role": "train",
-                 "rows": normalizer_rows, "mean": means, "scale": scales}}
+                 "action_target_lots": list(ACTION_TARGETS_LOTS),
+                 **serialize_actor(actor, architecture),
+                 "normalizer": {"fit_role": "train", "rows": normalizer_rows,
+                               "mean": means, "scale": scales}}
         model_path = stage / "model.json"
         model_path.write_bytes(json.dumps(model, sort_keys=True, indent=2, allow_nan=False).encode() + b"\n")
         run = {"schema": "td_market_data_usdm_rl_training", "version": 1,
@@ -724,8 +741,9 @@ def train(args: Any) -> dict[str, Any]:
                "trainer_code_sha256": trainer_code_sha256(),
                "role": "train", "train_window": train_window,
                "factor_set_id": args.factor_set, "factor_set_sha256": registry_sha256(),
-               "algorithm": {"name": ("linear_categorical_reinforce_train_standardized_v2"
-                                        if historical_training else "linear_categorical_reinforce"),
+               "architecture": architecture,
+               "algorithm": {"name": (f"{architecture}_categorical_reinforce_train_standardized_v2"
+                                        if historical_training else f"{architecture}_categorical_reinforce"),
                              "gamma": 0.99,
                              "baseline": ("per-update return mean"
                                           if historical_training

@@ -14,6 +14,7 @@ from .evaluator import evaluate
 from .factors import suites, registry_sha256
 from .historical import verify_plan
 from .learner import train
+from .policy import ARCHITECTURES
 
 
 SWEEP_SCHEMA = "td_market_data_usdm_rl_validation_factor_sweep"
@@ -73,6 +74,7 @@ def create_sweep(args: Any) -> dict[str, Any]:
         rl_results = []
         training_inventory = []
         first_run = None
+        effective_learning_rate = None
         for factor_set in factor_sets:
             for seed in training_seeds:
                 run_id = f"{factor_set}-seed-{seed}"
@@ -81,10 +83,17 @@ def create_sweep(args: Any) -> dict[str, Any]:
                     features=None, dataset=None, historical_inputs=input_root,
                     role_plan=role_plan, output=run_path, device=args.device,
                     updates=args.updates, seed=seed, factor_set=factor_set,
+                    architecture=getattr(args, "architecture", "linear"),
+                    learning_rate=getattr(args, "learning_rate", None),
                     fee_bps=args.fee_bps, slippage_bps=args.slippage_bps,
                     max_memory_mb=args.max_memory_mb,
                     max_gpu_memory_mb=args.max_gpu_memory_mb)
                 run_manifest = train(train_args)
+                run_learning_rate = run_manifest["algorithm"]["learning_rate"]
+                if effective_learning_rate is None:
+                    effective_learning_rate = run_learning_rate
+                elif run_learning_rate != effective_learning_rate:
+                    raise ValueError("factor sweep runs used different learning rates")
                 if first_run is None:
                     first_run = run_path
                 one_seed = [seed]
@@ -96,6 +105,7 @@ def create_sweep(args: Any) -> dict[str, Any]:
                 })
                 rl_results.append({
                     "factor_set_id": factor_set,
+                    "architecture": getattr(args, "architecture", "linear"),
                     "training_seed": seed,
                     "evaluation_seed": seed,
                     "training_run": f"training_runs/{run_id}",
@@ -141,6 +151,8 @@ def create_sweep(args: Any) -> dict[str, Any]:
             "role_plan_sha256": sha256_file(role_plan),
             "role_plan_fingerprint_sha256": plan["plan_fingerprint_sha256"],
             "factor_registry_sha256": registry_sha256(),
+            "architecture": getattr(args, "architecture", "linear"),
+            "learning_rate": effective_learning_rate,
             "sweep_code_sha256": sha256_file(Path(__file__).resolve()),
             "evaluation_code_sha256": baseline_report["evaluation_code_sha256"],
             "baseline_registry_sha256": baseline_report["baseline_registry_sha256"],
@@ -215,6 +227,7 @@ def verify_sweep(args: Any) -> dict[str, Any]:
     if (manifest.get("schema") != "td_market_data_usdm_rl_validation_sweep_artifact"
             or manifest.get("version") != 1 or report.get("schema") != SWEEP_SCHEMA
             or report.get("evaluation_role") != "validation"
+            or report.get("architecture", "linear") not in ARCHITECTURES
             or manifest.get("report_sha256") != sha256_file(report_path)):
         raise ValueError("unsupported or hash-mismatched Validation sweep artifact")
     expected_inventory = []
@@ -256,6 +269,8 @@ def verify_sweep(args: Any) -> dict[str, Any]:
                 or verified.get("seed") not in report["training_seeds"]
                 or verified.get("role_plan_sha256") != role_plan_hash
                 or verified.get("model_sha256") != item.get("model_sha256")
+                or verified.get("architecture", "linear") != report.get("architecture", "linear")
+                or verified.get("algorithm", {}).get("learning_rate") != report.get("learning_rate")
                 or verified.get("trace_sha256") != item.get("trace_sha256")
                 or verified.get("trainer_code_sha256") != item.get("trainer_code_sha256")
                 or sha256_file(run_path / "manifest.json") != item.get("manifest_sha256")

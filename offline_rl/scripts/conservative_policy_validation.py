@@ -22,6 +22,7 @@ from td_market_data_rl.analysis.validation_matrix import _initialize_evaluation_
 from td_market_data_rl.factors import registry_sha256, selected_factor_values
 from td_market_data_rl.historical import sha256_file, verify_plan
 from td_market_data_rl.learner import simulate_episode
+from td_market_data_rl.policy import load_actor
 from td_market_data_rl.sweep import verify_sweep
 
 
@@ -41,10 +42,7 @@ def _evaluate_task(task: dict[str, Any]) -> dict[str, Any]:
     model = json.loads((training_path / "model.json").read_bytes())
     manifest = json.loads((training_path / "manifest.json").read_bytes())
     factor_names = model["feature_names"]
-    actor = torch.nn.Linear(len(factor_names) + 1, 3, bias=True, device="cpu")
-    with torch.no_grad():
-        actor.weight.copy_(torch.tensor(model["weights"], dtype=torch.float32))
-        actor.bias.copy_(torch.tensor(model["bias"], dtype=torch.float32))
+    actor = load_actor(model, len(factor_names) + 1, device="cpu")
     means = model["normalizer"]["mean"]
     scales = model["normalizer"]["scale"]
     multiplier = float(task["flat_prior_multiplier"])

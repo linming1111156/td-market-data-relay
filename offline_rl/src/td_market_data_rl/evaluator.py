@@ -17,6 +17,7 @@ from .contracts import (ACTION_TARGETS_LOTS, MAX_TRAIN_MINUTES, MINUTE_NS,
 from .learner import set_seed, simulate_episode
 from .factors import selected_factor_values, suites, registry_sha256
 from .historical import verify_plan as verify_historical_role_plan
+from .policy import ARCHITECTURES, load_actor
 
 
 BASELINE_PATH = Path(__file__).with_name("baseline_strategies.json")
@@ -101,8 +102,10 @@ def load_inputs(features_path: Path | None, dataset_path: Path | None, role_plan
                 or model.get("normalizer", {}).get("rows") != plan["totals"]["train"]):
             raise ValueError("historical training artifact does not match Train-only role data")
         plan = {"windows": plan["roles"], "historical": True}
-    if (model.get("schema") != "td_market_data_usdm_rl_linear_policy"
-            or model.get("version") != 1
+    if (model.get("schema") not in ("td_market_data_usdm_rl_linear_policy",
+                                      "td_market_data_usdm_rl_policy")
+            or model.get("version") not in (1, 2)
+            or model.get("architecture", "linear") not in ARCHITECTURES
             or model.get("action_target_lots") != list(ACTION_TARGETS_LOTS)):
         raise ValueError("unsupported trained model contract")
     baseline = json.loads(BASELINE_PATH.read_bytes())
@@ -164,10 +167,7 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
     fee_bps = training["accounting"]["fee_bps"]
     slippage_bps = training["accounting"]["slippage_bps"]
     factor_names = training["factor_names"]
-    actor = torch.nn.Linear(len(factor_names) + 1, 3, bias=True, device="cpu")
-    with torch.no_grad():
-        actor.weight.copy_(torch.tensor(model["weights"], dtype=torch.float32))
-        actor.bias.copy_(torch.tensor(model["bias"], dtype=torch.float32))
+    actor = load_actor(model, len(factor_names) + 1, device="cpu")
     normalizer = model["normalizer"]
     means, scales = normalizer["mean"], normalizer["scale"]
     if (normalizer.get("fit_role") != "train" or len(means) != len(factor_names)
@@ -175,10 +175,10 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
             or any(not isinstance(value, (int, float)) or not np.isfinite(value) for value in means + scales)
             or any(value <= 0 for value in scales)):
         raise ValueError("trained normalizer does not match the selected Train-only factor suite")
-    if (len(model.get("weights", [])) != 3
-            or any(len(row) != len(factor_names) + 1 or any(not np.isfinite(value) for value in row) for row in model["weights"])
-            or len(model.get("bias", [])) != 3
-            or any(not np.isfinite(value) for value in model["bias"])):
+    serialized = [value for rows in (model.get("weights", []), model.get("hidden_weights", []),
+                                     model.get("output_weights", [])) for row in rows for value in row]
+    serialized += (model.get("bias", []) + model.get("hidden_bias", []) + model.get("output_bias", []))
+    if not serialized or any(not np.isfinite(value) for value in serialized):
         raise ValueError("trained model parameters have invalid shape or non-finite values")
     strategy_registry = json.loads(BASELINE_PATH.read_bytes())
     strategies = [entry["id"] for entry in strategy_registry["strategies"]]
