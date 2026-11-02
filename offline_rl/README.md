@@ -101,21 +101,21 @@ TMPDIR=/mnt/data/td-market-data-local/research-inputs/.tmp \
 offline_rl/.venv/bin/td-market-data-rl validation-sweep \
   --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
   --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json \
-  --factor-sets raw_baseline_v1 --architecture linear --learning-rate 3 \
+  --factor-sets raw_baseline_v1 --architecture linear --learning-rate 30 \
   --training-seeds 101,202,303 --evaluation-seeds 101,202,303 --updates 20 \
   --device auto --fee-bps 10 --slippage-bps 5 \
   --max-memory-mb 4096 --max-gpu-memory-mb 2048 \
-  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-raw-linear-lr3-v1
+  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-raw-linear-lr30-v1
 
 TMPDIR=/mnt/data/td-market-data-local/research-inputs/.tmp \
 offline_rl/.venv/bin/td-market-data-rl validation-sweep \
   --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
   --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json \
-  --factor-sets raw_baseline_v1 --architecture mlp_tanh8 --learning-rate 3 \
+  --factor-sets raw_baseline_v1 --architecture mlp_tanh8 --learning-rate 30 \
   --training-seeds 101,202,303 --evaluation-seeds 101,202,303 --updates 20 \
   --device auto --fee-bps 10 --slippage-bps 5 \
   --max-memory-mb 4096 --max-gpu-memory-mb 2048 \
-  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-raw-mlp-tanh8-lr3-v1
+  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-raw-mlp-tanh8-lr30-v1
 ```
 
 Verify each artifact with `td-market-data-rl verify-validation-sweep`, using the
