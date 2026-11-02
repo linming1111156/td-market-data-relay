@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import os
@@ -21,11 +22,17 @@ from .contracts import (ACTION_TARGETS_LOTS, LOT_BTC, RELAY_ROOT,
                         canonical, read_role_plan, read_verified_features, reject_system_temp,
                         sha256_file)
 from .factors import selected_factor_values, suites, registry_sha256
+from .historical import training_windows, verify_plan as verify_historical_role_plan
 
 
 def jsonl(path: Path) -> Iterator[dict[str, Any]]:
     with path.open("rb") as stream:
-        for index, raw in enumerate(stream, 1):
+        if path.name.endswith(".zst"):
+            reader = zstandard.ZstdDecompressor().stream_reader(stream)
+            source = io.BufferedReader(reader, buffer_size=1024 * 1024)
+        else:
+            source = stream
+        for index, raw in enumerate(source, 1):
             if not raw.endswith(b"\n") or len(raw) > 1024 * 1024:
                 raise ValueError(f"{path.name} row {index} is truncated or oversized")
             row = json.loads(raw)
@@ -41,24 +48,30 @@ def fit_normalizer(path: Path, start: int, end: int) -> tuple[list[float], list[
 
 def fit_factor_normalizer(path: Path, start: int, end: int,
                           factor_set_id: str) -> tuple[list[str], list[float], list[float], int]:
+    return fit_factor_normalizer_paths([(path, start, end)], factor_set_id)
+
+
+def fit_factor_normalizer_paths(paths: list[tuple[Path, int, int]],
+                                factor_set_id: str) -> tuple[list[str], list[float], list[float], int]:
     factor_names = suites().get(factor_set_id)
     if factor_names is None:
         raise ValueError(f"unknown factor set: {factor_set_id}")
     means = np.zeros(len(factor_names), dtype=np.float64)
     m2 = np.zeros(len(factor_names), dtype=np.float64)
     count = 0
-    for row in jsonl(path):
-        timestamp = row["decision_at_ns"]
-        if timestamp < start or timestamp >= end:
-            continue
-        if not row["feature_ready"]:
-            continue
-        _, factor_values = selected_factor_values(row["features"], factor_set_id)
-        vector = np.array(factor_values, dtype=np.float64)
-        count += 1
-        delta = vector - means
-        means += delta / count
-        m2 += delta * (vector - means)
+    for path, start, end in paths:
+        for row in jsonl(path):
+            timestamp = row["decision_at_ns"]
+            if timestamp < start or timestamp >= end:
+                continue
+            if not row["feature_ready"]:
+                continue
+            _, factor_values = selected_factor_values(row["features"], factor_set_id)
+            vector = np.array(factor_values, dtype=np.float64)
+            count += 1
+            delta = vector - means
+            means += delta / count
+            m2 += delta * (vector - means)
     if count < 2:
         raise ValueError("Train window needs at least two complete feature rows to fit normalization")
     scale = np.sqrt(m2 / count)
@@ -67,14 +80,12 @@ def fit_factor_normalizer(path: Path, start: int, end: int,
 
 
 def rows_in_window(feature_path: Path, ledger_path: Path, start: int, end: int) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
-    with feature_path.open("rb") as features, ledger_path.open("rb") as ledger:
-        for feature_raw, ledger_raw in zip(features, ledger, strict=True):
-            feature = json.loads(feature_raw)
-            if feature["decision_at_ns"] < start:
-                continue
-            if feature["decision_at_ns"] >= end:
-                break
-            yield feature, json.loads(ledger_raw)
+    for feature, ledger in zip(jsonl(feature_path), jsonl(ledger_path), strict=True):
+        if feature["decision_at_ns"] < start:
+            continue
+        if feature["decision_at_ns"] >= end:
+            break
+        yield feature, ledger
 
 
 def select_device(requested: str, max_gpu_memory_mb: int) -> tuple[torch.device, str | None]:
@@ -261,26 +272,59 @@ def train(args: Any) -> dict[str, Any]:
     if output.exists() or output.is_symlink():
         raise ValueError("training output must be a new create-only directory")
     reject_system_temp(output, "training output")
-    feature_path, dataset_path = args.features.resolve(strict=True), args.dataset.resolve(strict=True)
-    reject_system_temp(feature_path, "feature input")
-    reject_system_temp(dataset_path, "Dataset input")
-    reject_system_temp(args.role_plan.resolve(strict=True), "role-plan input")
     if output.resolve() == RELAY_ROOT or RELAY_ROOT in output.resolve().parents:
         raise ValueError("training artifacts must be stored outside the source repository")
-    feature_manifest, source_manifest = read_verified_features(feature_path, dataset_path)
-    feature_manifest_hash = sha256_file(feature_path / "manifest.json")
-    source_manifest_hash = sha256_file(dataset_path / "manifest.json")
     if args.role_plan.is_symlink():
         raise ValueError("role plan must not be a symlink")
     plan_path = args.role_plan.resolve(strict=True)
-    plan = read_role_plan(plan_path, feature_manifest, source_manifest,
-                          feature_manifest_hash, source_manifest_hash)
-    train_window = plan["windows"]["train"]
-    train_minutes = (train_window["end_ns"] - train_window["start_ns"]) // MINUTE_NS
+    historical_root = getattr(args, "historical_inputs", None)
+    historical_manifest = None
+    if historical_root is not None:
+        if args.features is not None or args.dataset is not None:
+            raise ValueError("historical training cannot mix Relay capture inputs with Vision history")
+        historical_root = historical_root.resolve(strict=True)
+        reject_system_temp(historical_root, "historical input")
+        plan = verify_historical_role_plan(plan_path, historical_root)
+        historical_manifest = json.loads((historical_root / "manifest.json").read_bytes())
+        train_sources = training_windows(historical_root, plan)
+        train_window = {"windows": [{"id": item["id"], "start_ns": item["start_ns"],
+                                     "end_ns": item["end_ns"]} for item in train_sources]}
+        feature_manifest_hash = sha256_file(historical_root / "manifest.json")
+        source_manifest_hash = historical_manifest["source_manifests"]["bulk_audit_sha256"]
+        source_manifest = {"source_capture_set_sha256": None}
+        feature_protocol_sha256 = historical_manifest["adapter_configuration_sha256"]
+        role_plan_hash = sha256_file(plan_path)
+        normalizer_paths = [(item["feature_path"], item["start_ns"], item["end_ns"])
+                            for item in train_sources]
+        train_minutes = sum((item["end_ns"] - item["start_ns"]) // MINUTE_NS
+                            for item in train_sources)
+        input_kind = "audited_vision_historical"
+    else:
+        if args.features is None or args.dataset is None:
+            raise ValueError("training requires either --historical-inputs or both --features and --dataset")
+        feature_path, dataset_path = args.features.resolve(strict=True), args.dataset.resolve(strict=True)
+        reject_system_temp(feature_path, "feature input")
+        reject_system_temp(dataset_path, "Dataset input")
+        reject_system_temp(plan_path, "role-plan input")
+        feature_manifest, source_manifest = read_verified_features(feature_path, dataset_path)
+        feature_manifest_hash = sha256_file(feature_path / "manifest.json")
+        source_manifest_hash = sha256_file(dataset_path / "manifest.json")
+        plan = read_role_plan(plan_path, feature_manifest, source_manifest,
+                              feature_manifest_hash, source_manifest_hash)
+        train_window = plan["windows"]["train"]
+        train_sources = [{"id": "train", "start_ns": train_window["start_ns"],
+                          "end_ns": train_window["end_ns"],
+                          "feature_path": feature_path / "features.jsonl",
+                          "ledger_path": feature_path / "ledger_inputs.jsonl"}]
+        normalizer_paths = [(feature_path / "features.jsonl", train_window["start_ns"], train_window["end_ns"])]
+        train_minutes = (train_window["end_ns"] - train_window["start_ns"]) // MINUTE_NS
+        feature_protocol_sha256 = feature_manifest["protocol_sha256"]
+        role_plan_hash = sha256_file(plan_path)
+        input_kind = "relay_capture"
     if train_minutes > MAX_TRAIN_MINUTES:
         raise ValueError("Train role exceeds the one-year hard cap")
-    factor_names, means, scales, normalizer_rows = fit_factor_normalizer(
-        feature_path / "features.jsonl", train_window["start_ns"], train_window["end_ns"], args.factor_set)
+    factor_names, means, scales, normalizer_rows = fit_factor_normalizer_paths(
+        normalizer_paths, args.factor_set)
     device, fallback = select_device(args.device, args.max_gpu_memory_mb)
     set_seed(args.seed)
     rng = torch.Generator(device=device).manual_seed(args.seed)
@@ -309,20 +353,32 @@ def train(args: Any) -> dict[str, Any]:
                         probabilities = torch.softmax(actor(tensor), dim=0)
                         return int(torch.multinomial(probabilities, 1, generator=rng).item()), state
 
-                    experiences, stats = simulate_episode(
-                        feature_path / "features.jsonl", feature_path / "ledger_inputs.jsonl",
-                        train_window, select_action, args.fee_bps, args.slippage_bps,
-                        args.max_memory_mb, collect_experiences=True)
+                    episode_experiences = []
+                    window_stats = []
+                    for source_window in train_sources:
+                        experiences, stats = simulate_episode(
+                            source_window["feature_path"], source_window["ledger_path"],
+                            {"start_ns": source_window["start_ns"], "end_ns": source_window["end_ns"]},
+                            select_action, args.fee_bps, args.slippage_bps,
+                            args.max_memory_mb, collect_experiences=True)
+                        if not experiences:
+                            raise ValueError(f"Train window {source_window['id']} contains no policy decisions")
+                        episode_experiences.append(experiences)
+                        window_stats.append({"window_id": source_window["id"], **stats})
+                    experiences = [item for episode in episode_experiences for item in episode]
                     if not experiences:
                         raise ValueError("Train window contains no ready policy decisions")
                     states = torch.tensor([item[0] for item in experiences], dtype=torch.float32, device=device)
                     actions = torch.tensor([item[1] for item in experiences], dtype=torch.int64, device=device)
                     rewards = torch.tensor([item[2] for item in experiences], dtype=torch.float32, device=device)
                     returns = torch.empty_like(rewards)
-                    running_return = torch.zeros((), dtype=torch.float32, device=device)
-                    for index in range(len(experiences) - 1, -1, -1):
-                        running_return = rewards[index] + 0.99 * running_return
-                        returns[index] = running_return
+                    offset = 0
+                    for episode in episode_experiences:
+                        running_return = torch.zeros((), dtype=torch.float32, device=device)
+                        for index in range(len(episode) - 1, -1, -1):
+                            running_return = rewards[offset + index] + 0.99 * running_return
+                            returns[offset + index] = running_return
+                        offset += len(episode)
                     log_probs = torch.log_softmax(actor(states), dim=1).gather(1, actions[:, None]).squeeze(1)
                     advantages = returns - baseline
                     loss = -(log_probs * advantages.detach()).mean()
@@ -333,6 +389,19 @@ def train(args: Any) -> dict[str, Any]:
                     mean_return = float(returns.mean().item())
                     baseline = mean_return if not baseline_initialized else 0.9 * baseline + 0.1 * mean_return
                     baseline_initialized = True
+                    stats = {"minutes": sum(row["minutes"] for row in window_stats),
+                             "decisions": sum(row["decisions"] for row in window_stats),
+                             "fills": sum(row["fills"] for row in window_stats),
+                             "net_pnl_usdt": sum(row["net_pnl_usdt"] for row in window_stats),
+                             "ending_equity_usdt_per_window_mean": sum(row["ending_equity_usdt"] for row in window_stats) / len(window_stats),
+                             "max_drawdown_fraction_worst_window": min(row["max_drawdown_fraction"] for row in window_stats),
+                             "gross_price_pnl_usdt": sum(row["gross_price_pnl_usdt"] for row in window_stats),
+                             "funding_pnl_usdt": sum(row["funding_pnl_usdt"] for row in window_stats),
+                             "fees_usdt": sum(row["fees_usdt"] for row in window_stats),
+                             "slippage_usdt": sum(row["slippage_usdt"] for row in window_stats),
+                             "traded_btc": sum(row["traded_btc"] for row in window_stats),
+                             "traded_notional_usdt": sum(row["traded_notional_usdt"] for row in window_stats),
+                             "window_stats": window_stats}
                     stats.update({"update": update + 1, "loss": float(loss.item()),
                                   "return_mean": mean_return, "baseline": baseline})
                     episode_stats.append(stats)
@@ -356,11 +425,16 @@ def train(args: Any) -> dict[str, Any]:
         model_path = stage / "model.json"
         model_path.write_bytes(json.dumps(model, sort_keys=True, indent=2, allow_nan=False).encode() + b"\n")
         run = {"schema": "td_market_data_usdm_rl_training", "version": 1,
+               "input_kind": input_kind,
                "source_dataset_manifest_sha256": source_manifest_hash,
                "features_manifest_sha256": feature_manifest_hash,
-               "role_plan_sha256": sha256_file(plan_path),
+               "role_plan_sha256": role_plan_hash,
+               "historical_input_manifest_sha256": feature_manifest_hash if historical_manifest else None,
+               "historical_role_plan_fingerprint_sha256": plan.get("plan_fingerprint_sha256") if historical_manifest else None,
+               "train_windows": [{"id": item["id"], "start_ns": item["start_ns"],
+                                  "end_ns": item["end_ns"]} for item in train_sources],
                "source_capture_set_sha256": source_manifest.get("source_capture_set_sha256"),
-               "feature_protocol_sha256": feature_manifest["protocol_sha256"],
+               "feature_protocol_sha256": feature_protocol_sha256,
                "trainer_code_sha256": code_digest.hexdigest(),
                "role": "train", "train_window": train_window,
                "factor_set_id": args.factor_set, "factor_set_sha256": registry_sha256(),

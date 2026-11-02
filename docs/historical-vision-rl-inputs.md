@@ -24,11 +24,23 @@ offline_rl/.venv/bin/python verify_vision_historical_rl_inputs.py \
 
 offline_rl/.venv/bin/td-market-data-rl historical-role-plan \
   --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
-  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v2.json
+  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v3.json
 
 offline_rl/.venv/bin/td-market-data-rl verify-historical-role-plan \
   --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
-  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v2.json
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v3.json
+
+offline_rl/.venv/bin/td-market-data-rl train \
+  --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v3.json \
+  --device auto --updates 1 --seed 101 --factor-set raw_baseline_v1 \
+  --fee-bps 10 --slippage-bps 5 --max-memory-mb 4096 --max-gpu-memory-mb 2048 \
+  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-training-run-v2
+
+offline_rl/.venv/bin/td-market-data-rl verify-run \
+  --artifact /mnt/data/td-market-data-local/research-inputs/vision-historical-training-run-v2 \
+  --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v3.json
 ```
 
 The builder checks archived Mark and aggregate-trade hashes against the bulk
@@ -73,8 +85,15 @@ real-time availability.
 
 ## Boundary
 
-This adapter is a data-preparation stage only. It does not yet train a model or
-rank factor suites. The historical artifact has its own schema and independent
+This adapter is a data-preparation stage. The current Python runner can freeze
+the historical role plan and train on Train windows only. Normalization is fit
+on Train rows only; each disjoint reliable Train window is treated as a separate
+episode so a gap does not create a synthetic transition. The training artifact
+binds the input manifest and role-plan hashes. Keep the factor registry local
+and ignored by Git. The historical artifact has its own schema and independent
 verifier; do not pass it through the live Relay Dataset verifier or label it as
-a live-capture Dataset. The next phase adds an immutable historical role plan
-and a Train-only training path that consumes these compressed windows directly.
+a live-capture Dataset.
+
+The one-update run demonstrated data/training integration only. It is not a
+factor-quality result. Validation-only multi-seed comparisons and frozen
+Test/OOS evaluation remain subsequent phases.

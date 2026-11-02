@@ -159,9 +159,30 @@ def verify_run(args: Any) -> dict[str, Any]:
     if (count != manifest.get("updates")
             or trace_digest.hexdigest() != manifest.get("trace_uncompressed_lines_sha256")):
         raise ValueError("trace update count differs from manifest")
-    if bool(args.dataset) != bool(args.features):
-        raise ValueError("verify-run requires both --dataset and --features, or neither")
-    if args.dataset and args.features:
+    if args.historical_inputs:
+        if args.dataset or args.features or not args.role_plan:
+            raise ValueError("historical verify-run requires --historical-inputs and --role-plan only")
+        historical_root = args.historical_inputs.resolve(strict=True)
+        plan_path = args.role_plan.resolve(strict=True)
+        plan = verify_plan(plan_path, historical_root)
+        historical_manifest = json.loads((historical_root / "manifest.json").read_bytes())
+        manifest_hash = sha256_file(historical_root / "manifest.json")
+        expected_train_windows = [
+            {"id": item["id"], "start_ns": item["start_ns"], "end_ns": item["end_ns"]}
+            for item in plan["roles"]["train"]]
+        if (manifest.get("input_kind") != "audited_vision_historical"
+                or manifest.get("historical_input_manifest_sha256") != manifest_hash
+                or manifest.get("features_manifest_sha256") != manifest_hash
+                or manifest.get("source_dataset_manifest_sha256")
+                != historical_manifest["source_manifests"]["bulk_audit_sha256"]
+                or manifest.get("role_plan_sha256") != sha256_file(plan_path)
+                or manifest.get("historical_role_plan_fingerprint_sha256")
+                != plan.get("plan_fingerprint_sha256")
+                or manifest.get("train_windows") != expected_train_windows
+                or manifest.get("train_window") != {"windows": expected_train_windows}
+                or model.get("normalizer", {}).get("rows") != plan["totals"]["train"]):
+            raise ValueError("training artifact is not bound to the supplied historical inputs/role plan")
+    elif args.dataset and args.features:
         reject_system_temp(args.features.resolve(strict=True), "feature input")
         reject_system_temp(args.dataset.resolve(strict=True), "Dataset input")
         feature_manifest, source_manifest = read_verified_features(args.features, args.dataset)
@@ -169,6 +190,8 @@ def verify_run(args: Any) -> dict[str, Any]:
                 or manifest["source_dataset_manifest_sha256"] != sha256_file(args.dataset / "manifest.json")
                 or manifest["source_capture_set_sha256"] != source_manifest.get("source_capture_set_sha256")):
             raise ValueError("artifact source hashes differ from the provided inputs")
+    elif args.dataset or args.features or args.role_plan:
+        raise ValueError("verify-run requires the matching historical inputs or both Relay Dataset inputs")
     return manifest
 
 
@@ -196,8 +219,10 @@ def make_parser() -> argparse.ArgumentParser:
         func=lambda args: verify_plan(args.role_plan.resolve(strict=True),
                                       args.historical_inputs.resolve(strict=True)))
     learner = commands.add_parser("train", help="train the linear categorical policy on Train only")
-    learner.add_argument("--features", type=Path, required=True)
-    learner.add_argument("--dataset", type=Path, required=True)
+    learner.add_argument("--features", type=Path)
+    learner.add_argument("--dataset", type=Path)
+    learner.add_argument("--historical-inputs", type=Path,
+                         help="audited Vision historical input set; mutually exclusive with Relay inputs")
     learner.add_argument("--role-plan", type=Path, required=True)
     learner.add_argument("--output", type=Path, required=True)
     learner.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
@@ -214,6 +239,8 @@ def make_parser() -> argparse.ArgumentParser:
     verifier.add_argument("--artifact", type=Path, required=True)
     verifier.add_argument("--features", type=Path)
     verifier.add_argument("--dataset", type=Path)
+    verifier.add_argument("--historical-inputs", type=Path)
+    verifier.add_argument("--role-plan", type=Path)
     verifier.set_defaults(func=verify_run)
     evaluator = commands.add_parser("evaluate", help="compare frozen policy and baselines on held-out windows")
     evaluator.add_argument("--features", type=Path, required=True)

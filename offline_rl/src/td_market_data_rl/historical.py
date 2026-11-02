@@ -113,6 +113,22 @@ def verify_plan(plan_path: Path, input_root: Path) -> dict[str, Any]:
     return plan
 
 
+def training_windows(input_root: Path, plan: dict[str, Any]) -> list[dict[str, Any]]:
+    root = input_root.resolve(strict=True)
+    result = []
+    for item in plan["roles"]["train"]:
+        feature_path = root / item["features"]["path"]
+        ledger_path = root / item["ledger_inputs"]["path"]
+        for path, entry in ((feature_path, item["features"]), (ledger_path, item["ledger_inputs"])):
+            if (path.is_symlink() or not path.is_file() or path.stat().st_size != entry["size_bytes"]
+                    or sha256_file(path) != entry["sha256"]):
+                raise ValueError(f"historical Train shard failed role-plan verification: {path}")
+        result.append({"id": item["id"], "start_ns": item["start_ns"],
+                       "end_ns": item["end_ns"], "feature_path": feature_path,
+                       "ledger_path": ledger_path})
+    return result
+
+
 def create_role_plan(args: Any) -> dict[str, Any]:
     input_root = args.historical_inputs.resolve(strict=True)
     payload = build_payload(input_root)
