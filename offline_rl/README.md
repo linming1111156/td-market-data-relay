@@ -90,6 +90,23 @@ with input hashes, role-plan hash, trainer-code hash, cost settings, seed,
 resource limits, selected device, fallback reason, and summary statistics. It
 is a research artifact, not a production model or trading authorization.
 
+## Inspect Train-only factor signal strength
+
+Before changing a factor suite, the local diagnostic below measures the
+correlation and top/bottom decile forward mark returns for the private factor
+registry at 15-minute, 1-hour, and 4-hour horizons. It reads only the frozen
+Train windows, verifies their hashes, and writes a create-only report under
+`/mnt/data`. The decile spread is a signal diagnostic, not a backtest; it does
+not model fills, Funding, or turnover.
+
+```sh
+PYTHONPATH=offline_rl/src offline_rl/.venv/bin/python \
+  offline_rl/scripts/train_signal_diagnostics.py \
+  --historical-inputs /mnt/data/research/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/research/vision-historical-role-plan-v4.json \
+  --output /mnt/data/research/train-signal-diagnostics-v1.json
+```
+
 ## Compare with frozen baselines
 
 Evaluation reads only the role plan's Validation/Test/OOS windows. It never
