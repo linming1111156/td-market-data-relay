@@ -39,3 +39,39 @@ The current feature/ledger artifacts remain Python-readable JSONL. The Rust
 minute dataset is a new historical source format; the verified RL `train` CLI
 still requires a historical-input adapter before it accepts this manifest. The
 existing factor/learner and CUDA/PyTorch path remain Python-owned.
+
+## Causal feature shards
+
+The Rust feature stage consumes the compressed monthly minute files directly.
+It emits the seven v1 causal inputs, readiness/null values, the decision-time
+Mark price, current-minute execution aggregates, and source-quality flags.
+Features at minute `t` use only Mark and aggTrades from minutes strictly before
+`t`; the execution object describes the following minute. The normalization
+statistics and candidate factor-suite selection remain on the Python side.
+
+```sh
+python3 derive_vision_rl_features.py \
+  --input /mnt/data/td-market-data-local/research-inputs/vision-minute-engine-v1 \
+  --output /mnt/data/td-market-data-local/research-inputs/vision-rl-features-rust-v1
+```
+
+Output is one `BTCUSDT-YYYY-MM.features.jsonl.zst` file per source month plus a
+hash-bound manifest. The feature order follows the seven-input Gateway v1
+contract; Relay's JSON field names use
+`aggtrade_signed_volume_imbalance_{1m,5m}` where Gateway's Rust struct calls
+them `aggtrade_imbalance_{1m,5m}`. Missing Mark and aggTrades source minutes are
+explicitly flagged. `aggtrade_history_complete` covers the five preceding
+minutes; combine it with `aggtrade_minute_complete` to reject a gap and its
+five-minute recovery. A feature row can be mathematically ready while its
+current execution minute is incomplete, so consumers must apply these quality
+flags and the audited reliable-window manifest before training.
+
+On the existing 2025 Train cache, the Rust outputs were compared row by row
+with Gateway's frozen cache across all 525,600 minutes. All seven values had
+matching nulls and readiness flags; the largest floating point difference was
+below `4.5e-16`. This checks feature semantics, not policy performance. The
+feature output carries historical exchange event time only and has no live
+receive-time evidence. Funding settlements also remain a separate input. The
+historical adapter that combines the feature shards, audited reliability roles,
+and Funding evidence into the current training artifact is still required
+before this output can be passed to `td-market-data-rl train`.
