@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -24,6 +25,8 @@ MINUTE_NS = 60_000_000_000
 DECISION_NS = 15 * MINUTE_NS
 MAX_TRAIN_MINUTES = 525_600
 MAX_UPDATES = 20
+MINIMUM_NOTIONAL_USDT = 50.0
+ENTRY_NOTIONAL_CAP_USDT = 100.0
 
 
 def canonical(value: Any) -> bytes:
@@ -44,6 +47,24 @@ def reject_system_temp(path: Path, label: str) -> None:
     if any(resolved == root or root in resolved.parents
            for root in (Path("/tmp"), Path("/var/tmp"))):
         raise ValueError(f"{label} must be on the selected data volume, not /tmp")
+
+
+def feasible_action_mask(mark_price: float | None, position_lots: int) -> tuple[bool, bool, bool]:
+    """Mask only entries ruled out by decision-time price and frozen notional limits.
+
+    Execution volume is intentionally excluded: the replay's participation
+    volume belongs to the following minute and isn't known at decision time.
+    Action order is short, flat, long.
+    """
+    if position_lots != 0:
+        return True, True, True
+    if (mark_price is None or not isinstance(mark_price, (int, float))
+            or not math.isfinite(mark_price) or mark_price <= 0):
+        return False, True, False
+    notional = LOT_BTC * mark_price
+    if MINIMUM_NOTIONAL_USDT <= notional <= ENTRY_NOTIONAL_CAP_USDT:
+        return True, True, True
+    return False, True, False
 
 
 def read_verified_features(features_path: Path, dataset_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:

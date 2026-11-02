@@ -69,3 +69,15 @@ def load_actor(model: dict[str, Any], input_size: int,
             actor[2].weight.copy_(torch.tensor(model["output_weights"], dtype=torch.float32, device=device))
             actor[2].bias.copy_(torch.tensor(model["output_bias"], dtype=torch.float32, device=device))
     return actor
+
+
+def apply_action_mask(logits: torch.Tensor,
+                      mask: tuple[bool, bool, bool] | list[bool] | torch.Tensor) -> torch.Tensor:
+    if logits.shape[-1] != 3:
+        raise ValueError("categorical policy must have three actions")
+    mask_tensor = torch.as_tensor(mask, dtype=torch.bool, device=logits.device)
+    if mask_tensor.shape[-1:] != (3,) or mask_tensor.shape not in ((3,), logits.shape):
+        raise ValueError("action mask must allow at least one of three actions")
+    if not bool(mask_tensor.any(dim=-1).all().item()):
+        raise ValueError("action mask must allow at least one action per row")
+    return logits.masked_fill(~mask_tensor, -torch.inf)

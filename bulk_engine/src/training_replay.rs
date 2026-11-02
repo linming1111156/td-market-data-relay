@@ -27,6 +27,9 @@ struct Request {
     hidden_weights: Vec<Vec<f64>>,
     #[serde(default)]
     hidden_bias: Vec<f64>,
+    lot_size_btc: f64,
+    minimum_notional_usdt: f64,
+    entry_notional_cap_usdt: f64,
     seed: u64,
     fee_bps: f64,
     slippage_bps: f64,
@@ -53,6 +56,7 @@ struct WindowResult {
 struct Stats {
     minutes: u64,
     decisions: u64,
+    infeasible_entry_decisions: u64,
     fills: u64,
     gross_price_pnl_usdt: f64,
     funding_pnl_usdt: f64,
@@ -169,6 +173,7 @@ struct Experience {
     state: Vec<f32>,
     action: u8,
     reward: f32,
+    action_mask: u8,
 }
 
 fn clip(value: f64, low: f64, high: f64) -> f64 {
@@ -212,7 +217,27 @@ fn xorshift64star(state: &mut u64) -> f64 {
     (x.wrapping_mul(0x2545F4914F6CDD1D) >> 11) as f64 / ((1u64 << 53) as f64)
 }
 
-fn choose(state: &[f64], request: &Request, rng: &mut u64) -> Result<u8, String> {
+fn feasible_action_mask(mark: Option<f64>, position: i64, request: &Request) -> u8 {
+    if position != 0 {
+        return 0b111;
+    }
+    let Some(price) = mark.filter(|price| price.is_finite() && *price > 0.0) else {
+        return 0b010;
+    };
+    let notional = request.lot_size_btc * price;
+    if notional >= request.minimum_notional_usdt
+        && notional <= request.entry_notional_cap_usdt
+    {
+        0b111
+    } else {
+        0b010
+    }
+}
+
+fn choose(state: &[f64], action_mask: u8, request: &Request, rng: &mut u64) -> Result<u8, String> {
+    if action_mask & 0b010 == 0 || action_mask & !0b111 != 0 {
+        return Err("invalid policy action mask".into());
+    }
     let logits = match request.architecture.as_str() {
         "linear" => {
             if request.weights.len() != 3
@@ -245,8 +270,11 @@ fn choose(state: &[f64], request: &Request, rng: &mut u64) -> Result<u8, String>
         }
         _ => return Err("unsupported policy architecture".into()),
     };
-    let maximum = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let probabilities: Vec<f64> = logits.iter().map(|value| (value - maximum).exp()).collect();
+    let masked: Vec<f64> = logits.iter().enumerate().map(|(index, value)| {
+        if action_mask & (1 << index) != 0 { *value } else { f64::NEG_INFINITY }
+    }).collect();
+    let maximum = masked.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let probabilities: Vec<f64> = masked.iter().map(|value| (value - maximum).exp()).collect();
     let total: f64 = probabilities.iter().sum();
     let threshold = xorshift64star(rng) * total;
     let mut cumulative = 0.0;
@@ -338,6 +366,7 @@ fn run_window(
     let mut pending_reward = 0.0;
     let mut current_state: Option<Vec<f32>> = None;
     let mut current_action = 1u8;
+    let mut current_action_mask = 0b111u8;
     let mut experiences = Vec::new();
     let mut stats = Stats::default();
     let mut last_execution: Option<(f64, f64)> = None;
@@ -403,6 +432,7 @@ fn run_window(
                     state,
                     action: current_action,
                     reward: reward as f32,
+                    action_mask: current_action_mask,
                 });
             }
             pending_reward = 0.0;
@@ -414,7 +444,11 @@ fn run_window(
             state.push((factor_value(&row.features, name)? - request.means[j]) / request.scales[j]);
         }
         state.push(position as f64);
-        let action = choose(&state, request, &mut rng)?;
+        let action_mask = feasible_action_mask(mark, position, request);
+        if action_mask == 0b010 {
+            stats.infeasible_entry_decisions += 1;
+        }
+        let action = choose(&state, action_mask, request, &mut rng)?;
         let target = [-1i64, 0, 1][action as usize];
         let price = if row.flags & 8 != 0 {
             Some(row.vwap)
@@ -466,6 +500,7 @@ fn run_window(
                 state,
                 action: current_action,
                 reward: reward as f32,
+                action_mask: current_action_mask,
             });
         }
         pending_reward = 0.0;
@@ -485,6 +520,7 @@ fn run_window(
         }
         current_state = Some(state.into_iter().map(|x| x as f32).collect());
         current_action = action;
+        current_action_mask = action_mask;
         stats.decisions += 1;
     }
     if position != 0 {
@@ -536,6 +572,7 @@ fn run_window(
             state,
             action: current_action,
             reward: reward as f32,
+            action_mask: current_action_mask,
         });
     }
     if stats.minutes != window.minute_count {
@@ -564,7 +601,7 @@ fn run_window(
         File::create(path).map_err(|e| format!("create experiences: {e}"))?,
     );
     writer
-        .write_all(b"TDRP1\0\0\0")
+        .write_all(b"TDRP2\0\0\0")
         .map_err(|e| format!("write replay header: {e}"))?;
     writer
         .write_all(&(request.factor_names.len() as u32 + 1).to_le_bytes())
@@ -581,6 +618,9 @@ fn run_window(
         writer
             .write_all(&[item.action])
             .map_err(|e| format!("write experience action: {e}"))?;
+        writer
+            .write_all(&[item.action_mask])
+            .map_err(|e| format!("write experience action mask: {e}"))?;
         writer
             .write_all(&item.reward.to_le_bytes())
             .map_err(|e| format!("write experience reward: {e}"))?;
@@ -615,13 +655,17 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     )
     .map_err(|e| format!("parse replay request: {e}"))?;
     if request.schema != "td_market_data_training_replay_request"
-        || request.version != 2
+        || request.version != 3
         || request.windows.is_empty()
         || request.factor_names.is_empty()
         || request.factor_names.len() != request.means.len()
         || request.means.len() != request.scales.len()
         || request.scales.iter().any(|x| !x.is_finite() || *x <= 0.0)
         || request.means.iter().any(|x| !x.is_finite())
+        || !request.lot_size_btc.is_finite() || request.lot_size_btc <= 0.0
+        || !request.minimum_notional_usdt.is_finite() || request.minimum_notional_usdt < 0.0
+        || !request.entry_notional_cap_usdt.is_finite()
+        || request.entry_notional_cap_usdt < request.minimum_notional_usdt
         || !request.fee_bps.is_finite()
         || !request.slippage_bps.is_finite()
         || request.memory_limit_mb == 0
@@ -648,7 +692,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         );
     }
     windows.sort_by(|a, b| a.experiences_path.cmp(&b.experiences_path));
-    let report = serde_json::json!({"schema":"td_market_data_training_replay_result","version":2,
+    let report = serde_json::json!({"schema":"td_market_data_training_replay_result","version":3,
         "rng":"xorshift64star-v1","workers":windows.len(),"windows":windows});
     let mut file = File::create(&report_path).map_err(|e| format!("create replay report: {e}"))?;
     serde_json::to_writer_pretty(&mut file, &report)

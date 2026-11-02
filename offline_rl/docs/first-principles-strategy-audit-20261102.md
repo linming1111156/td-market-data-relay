@@ -35,18 +35,21 @@ Measured on the frozen v4 role plan:
 
 Per-window eligibility is also uneven: `train-01` has 10,609 / 23,061
 eligible decisions (46.00%), `train-02` has 4,637 / 11,973 (38.73%), and
-`validation-01` has 8,640 / 8,640 (100%). The policy state does not include
-mark price or an explicit order-feasibility flag, and nonflat actions are not
-masked when the execution rules cannot open a position. An infeasible action
-can therefore be sampled and recorded as a policy decision without changing
-the account.
+`validation-01` has 8,640 / 8,640 (100%). The research path now computes a
+mark-price-based feasibility mask while flat and applies it consistently to
+Rust/Python action sampling, REINFORCE log probabilities, and RL inference.
+Infeasible entries are no longer sampled as executable actions. The
+observation itself still does not include mark price; the mask supplies only
+this immediate feasibility constraint.
 
-This may be an intentional risk limit, but it changes the action space by
-market price and creates a Train/Validation mismatch. It must be modeled as an
-explicit exchange/risk constraint. If the intended order size is dynamic, the
-current fixed-lot model does not implement that intent. The `$50` minimum and
-`$100` cap also need to be reconciled with the actual historical contract
-filters and the user's previously specified minimum-order rule.
+This may be an intentional risk limit, but it changes the available action
+space by market price and creates a Train/Validation mismatch. The mask now
+models that constraint explicitly, but does not resolve whether fixed sizing
+is correct. If the intended order size is dynamic, the current fixed-lot model
+does not implement that intent. The `$50` minimum and `$100` cap also need to
+be reconciled with actual historical contract filters and the previously
+specified minimum-order rule. This mask remains a research guardrail, not a
+live exchange-filter implementation.
 
 ### 2. Fill-time accounting and episode-end positions were inconsistent
 
@@ -144,11 +147,13 @@ the actionability and cost model is unlikely to solve the observed gap.
    minimum notional, maximum entry notional, maximum position, and behavior
    when the minimum valid order exceeds the risk cap. Bind their source and
    effective dates. Keep the result flat when no valid order fits.
-2. Rebuild Rust and Python replay paths, then recompute Train and Validation
-   artifacts with corrected fill-time accounting and terminal settlement.
-   Record marked equity and net liquidation equity separately.
-3. Keep flat as the default action. Make order feasibility explicit and permit
-   entry only when an independently estimated expected move clears fees,
+2. Rust and Python replay paths now share corrected fill-time accounting,
+   terminal settlement, and action-feasibility constraints. Train and
+   Validation artifacts have been recomputed under this protocol; the current
+   comparison still uses the fixed `$50`/`$100` research bounds.
+3. Keep flat as the default action. Feasible entries are explicit; the
+   remaining hypothesis is to permit entry only when an independently
+   estimated expected move clears fees,
    slippage, Funding, and a risk margin; add persistence/hysteresis so small
    signal changes do not churn positions.
 4. Validate signal hypotheses on Train, then compare the frozen policy with

@@ -21,10 +21,12 @@ import zstandard
 from .contracts import (ACTION_TARGETS_LOTS, LOT_BTC, RELAY_ROOT,
                         MAX_TRAIN_MINUTES, MAX_UPDATES, MINUTE_NS,
                         canonical, read_role_plan, read_verified_features, reject_system_temp,
-                        sha256_file)
+                        sha256_file, feasible_action_mask,
+                        MINIMUM_NOTIONAL_USDT, ENTRY_NOTIONAL_CAP_USDT)
 from .factors import selected_factor_values, suites, registry_sha256
 from .historical import training_windows, verify_plan as verify_historical_role_plan
-from .policy import ARCHITECTURES, build_actor, initialize_actor, serialize_actor
+from .policy import (ARCHITECTURES, apply_action_mask, build_actor,
+                     initialize_actor, serialize_actor)
 
 
 def jsonl(path: Path) -> Iterator[dict[str, Any]]:
@@ -175,7 +177,7 @@ def replay_historical_rust(stage: Path, update: int, train_sources: list[dict[st
         weights, bias = parameters["output_weights"], parameters["output_bias"]
         hidden_weights, hidden_bias = parameters["hidden_weights"], parameters["hidden_bias"]
     request = {
-        "schema": "td_market_data_training_replay_request", "version": 2,
+        "schema": "td_market_data_training_replay_request", "version": 3,
         "windows": [{"id": item["id"],
                      "minute_count": (item["end_ns"] - item["start_ns"]) // MINUTE_NS,
                      "cache_path": str(cache_root / f"window-{index:02}.tdcache")}
@@ -183,6 +185,9 @@ def replay_historical_rust(stage: Path, update: int, train_sources: list[dict[st
         "factor_names": factor_names, "means": means, "scales": scales,
         "architecture": architecture, "weights": weights, "bias": bias,
         "hidden_weights": hidden_weights, "hidden_bias": hidden_bias,
+        "lot_size_btc": LOT_BTC,
+        "minimum_notional_usdt": MINIMUM_NOTIONAL_USDT,
+        "entry_notional_cap_usdt": ENTRY_NOTIONAL_CAP_USDT,
         "seed": int(seed + update), "fee_bps": float(fee_bps),
         "slippage_bps": float(slippage_bps),
         "memory_limit_mb": memory_limit_mb,
@@ -196,15 +201,16 @@ def replay_historical_rust(stage: Path, update: int, train_sources: list[dict[st
         raise ValueError(f"Rust historical replay failed: {error.stderr.strip()}") from error
     report = json.loads(report_path.read_bytes())
     if (report.get("schema") != "td_market_data_training_replay_result"
-            or report.get("version") != 2
+            or report.get("version") != 3
             or len(report.get("windows", [])) != len(train_sources)):
         raise ValueError("Rust replay engine returned an invalid report")
     by_id = {item["id"]: item for item in train_sources}
     episode_experiences = []
     window_stats = []
     dtype = np.dtype([("state", "<f4", (len(factor_names) + 1,)),
-                      ("action", "u1"), ("reward", "<f4")], align=False)
-    expected_record_size = (len(factor_names) + 1) * 4 + 5
+                      ("action", "u1"), ("action_mask", "u1"),
+                      ("reward", "<f4")], align=False)
+    expected_record_size = (len(factor_names) + 1) * 4 + 6
     for row in report["windows"]:
         source = by_id.get(row.get("window_id"))
         if source is None:
@@ -212,7 +218,7 @@ def replay_historical_rust(stage: Path, update: int, train_sources: list[dict[st
         path = engine_output / row["experiences_path"]
         with path.open("rb") as stream:
             header = stream.read(20)
-            if len(header) != 20 or header[:8] != b"TDRP1\0\0\0":
+            if len(header) != 20 or header[:8] != b"TDRP2\0\0\0":
                 raise ValueError("Rust replay experience header is invalid")
             width = int.from_bytes(header[8:12], "little")
             count = int.from_bytes(header[12:20], "little")
@@ -223,8 +229,12 @@ def replay_historical_rust(stage: Path, update: int, train_sources: list[dict[st
                 raise ValueError("Rust replay experience file is truncated or oversized")
             if dtype.itemsize != expected_record_size:
                 raise ValueError("host experience record layout is not packed as specified")
+            masks = np.stack([((records["action_mask"] & (1 << action)) != 0)
+                              for action in range(3)], axis=1)
+            if np.any(~masks[np.arange(count), records["action"].astype(np.int64)]):
+                raise ValueError("Rust replay sampled an action excluded by its feasibility mask")
         episode_experiences.append((records["state"], records["action"].astype(np.int64),
-                                    records["reward"]))
+                                    records["reward"], masks))
         window_stats.append({"window_id": source["id"], **row["stats"]})
     shutil.rmtree(work)
     return episode_experiences, window_stats
@@ -361,15 +371,17 @@ def simulate_episode(feature_path: Path, ledger_path: Path, window: dict[str, in
     min_drawdown = 0.0
     pending_cost = 0.0
     pending_reward = 0.0
-    experiences: list[tuple[list[float], int, float]] = []
+    experiences: list[tuple[list[float], int, float, tuple[bool, bool, bool]]] = []
     current_state: list[float] | None = None
     current_action = 1
+    current_action_mask = (True, True, True)
     decisions = fills = 0
     total_fees = total_slippage = funding_pnl = gross_pnl = 0.0
     terminal_close_cost = 0.0
     traded_btc = traded_notional = 0.0
     ready_minutes = valid_mark_minutes = exposure_minutes = 0
     minute_count = 0
+    infeasible_entry_decisions = 0
     last_ledger: dict[str, Any] | None = None
     for feature, ledger in rows_in_window(feature_path, ledger_path, start, end):
         last_ledger = ledger
@@ -404,12 +416,25 @@ def simulate_episode(feature_path: Path, ledger_path: Path, window: dict[str, in
         if not feature["feature_ready"]:
             if collect_experiences and current_state is not None:
                 reward = pending_reward - pending_cost
-                experiences.append((current_state, current_action, reward / 10_000.0))
+                experiences.append((current_state, current_action, reward / 10_000.0,
+                                    current_action_mask))
             pending_reward = 0.0
             pending_cost = 0.0
             current_state = None
             continue
-        action, state = select_action(feature, position)
+        selected = select_action(feature, position)
+        if len(selected) == 3:
+            action, state, action_mask = selected
+            action_mask = tuple(bool(item) for item in action_mask)
+        else:
+            action, state = selected
+            action_mask = (True, True, True)
+        if len(action_mask) != 3 or not action_mask[1]:
+            raise ValueError("policy action mask must allow flat and have three actions")
+        if not action_mask[0] and not action_mask[2]:
+            infeasible_entry_decisions += 1
+        if not action_mask[action]:
+            raise ValueError("policy selected an action excluded by the decision-time feasibility mask")
         if not isinstance(action, int) or isinstance(action, bool) or action not in (0, 1, 2):
             raise ValueError("policy returned an invalid categorical action")
         target_lots = ACTION_TARGETS_LOTS[action]
@@ -444,7 +469,8 @@ def simulate_episode(feature_path: Path, ledger_path: Path, window: dict[str, in
         # interval, or its last return segment is assigned to the wrong action.
         if collect_experiences and current_state is not None:
             reward = pending_reward - pending_cost
-            experiences.append((current_state, current_action, reward / 10_000.0))
+            experiences.append((current_state, current_action, reward / 10_000.0,
+                                current_action_mask))
         pending_reward = 0.0
         pending_cost = 0.0
         # Margin guard is adverse liquidation at the explicit maintenance margin.
@@ -458,6 +484,7 @@ def simulate_episode(feature_path: Path, ledger_path: Path, window: dict[str, in
         if max_equity > 0:
             min_drawdown = min(min_drawdown, (equity - max_equity) / max_equity)
         current_state, current_action = state, action
+        current_action_mask = action_mask
         decisions += 1
     # Settle any remaining position at the final post-decision execution minute.
     # This minute ends exactly at the half-open role-window boundary.
@@ -492,7 +519,8 @@ def simulate_episode(feature_path: Path, ledger_path: Path, window: dict[str, in
             min_drawdown = min(min_drawdown, (equity - max_equity) / max_equity)
     if collect_experiences and current_state is not None:
         experiences.append((current_state, current_action,
-                            (pending_reward - pending_cost) / 10_000.0))
+                            (pending_reward - pending_cost) / 10_000.0,
+                            current_action_mask))
     stats = {"minutes": minute_count, "decisions": decisions, "fills": fills,
              "gross_price_pnl_usdt": gross_pnl, "funding_pnl_usdt": funding_pnl,
              "fees_usdt": total_fees, "slippage_usdt": total_slippage,
@@ -502,6 +530,7 @@ def simulate_episode(feature_path: Path, ledger_path: Path, window: dict[str, in
              "net_return_fraction": (equity - 10_000.0) / 10_000.0,
              "ending_position_lots": position, "closed_at_end": position == 0,
              "traded_btc": traded_btc, "traded_notional_usdt": traded_notional,
+             "infeasible_entry_decisions": infeasible_entry_decisions,
              "exposure_minutes": exposure_minutes, "mark_coverage_fraction": valid_mark_minutes / minute_count if minute_count else 0.0,
              "feature_ready_fraction": ready_minutes / minute_count if minute_count else 0.0,
              "mean_policy_reward_fraction": float(np.mean([item[2] for item in experiences])) if experiences else 0.0}
@@ -614,14 +643,16 @@ def train(args: Any) -> dict[str, Any]:
                         episode_experiences, window_stats = [], []
                         rng = torch.Generator(device=device).manual_seed(args.seed + update)
 
-                        def select_action(feature: dict[str, Any], position: int) -> tuple[int, list[float]]:
+                        def select_action(feature: dict[str, Any], position: int):
                             _, values = selected_factor_values(feature["features"], args.factor_set)
                             base = [(value - means[index]) / scales[index]
                                     for index, value in enumerate(values)]
                             state = base + [position]
+                            mask = feasible_action_mask(feature.get("mark_price"), position)
                             tensor = torch.tensor(state, dtype=torch.float32, device=device)
-                            probabilities = torch.softmax(actor(tensor), dim=0)
-                            return int(torch.multinomial(probabilities, 1, generator=rng).item()), state
+                            logits = apply_action_mask(actor(tensor), mask)
+                            probabilities = torch.softmax(logits, dim=0)
+                            return int(torch.multinomial(probabilities, 1, generator=rng).item()), state, mask
 
                         for source_window in train_sources:
                             experiences, stats = simulate_episode(
@@ -634,16 +665,19 @@ def train(args: Any) -> dict[str, Any]:
                             episode_experiences.append((
                                 np.asarray([item[0] for item in experiences], dtype=np.float32),
                                 np.asarray([item[1] for item in experiences], dtype=np.int64),
-                                np.asarray([item[2] for item in experiences], dtype=np.float32)))
+                                np.asarray([item[2] for item in experiences], dtype=np.float32),
+                                np.asarray([item[3] for item in experiences], dtype=np.bool_)))
                             window_stats.append({"window_id": source_window["id"], **stats})
                     if not episode_experiences or sum(len(item[1]) for item in episode_experiences) == 0:
                         raise ValueError("Train window contains no ready policy decisions")
                     state_array = np.concatenate([item[0] for item in episode_experiences])
                     action_array = np.concatenate([item[1] for item in episode_experiences])
                     reward_array = np.concatenate([item[2] for item in episode_experiences])
+                    action_mask_array = np.concatenate([item[3] for item in episode_experiences])
                     states = torch.as_tensor(state_array, dtype=torch.float32, device=device)
                     actions = torch.as_tensor(action_array, dtype=torch.int64, device=device)
                     rewards = torch.as_tensor(reward_array, dtype=torch.float32, device=device)
+                    action_masks = torch.as_tensor(action_mask_array, dtype=torch.bool, device=device)
                     returns = torch.empty_like(rewards)
                     offset = 0
                     for episode in episode_experiences:
@@ -653,7 +687,7 @@ def train(args: Any) -> dict[str, Any]:
                             returns[offset + index] = running_return
                         offset += len(episode[2])
                     logits = actor(states)
-                    all_log_probs = torch.log_softmax(logits, dim=1)
+                    all_log_probs = torch.log_softmax(apply_action_mask(logits, action_masks), dim=1)
                     log_probs = all_log_probs.gather(1, actions[:, None]).squeeze(1)
                     if historical_training:
                         # Returns are fractional equity changes, often around 1e-5.
@@ -670,7 +704,11 @@ def train(args: Any) -> dict[str, Any]:
                         advantages = returns - baseline
                         advantage_scale = advantages.std(unbiased=False)
                     probabilities = all_log_probs.exp()
-                    entropy = -(probabilities * all_log_probs).sum(dim=1).mean()
+                    entropy_terms = torch.where(
+                        probabilities > 0,
+                        probabilities * torch.nan_to_num(all_log_probs, neginf=0.0),
+                        torch.zeros_like(probabilities))
+                    entropy = -entropy_terms.sum(dim=1).mean()
                     action_counts = [int((actions == index).sum().item())
                                      for index in range(len(ACTION_TARGETS_LOTS))]
                     action_return_means = [
@@ -702,6 +740,7 @@ def train(args: Any) -> dict[str, Any]:
                                  "slippage_usdt": sum(row["slippage_usdt"] for row in window_stats),
                                  "traded_btc": sum(row["traded_btc"] for row in window_stats),
                                  "traded_notional_usdt": sum(row["traded_notional_usdt"] for row in window_stats),
+                                 "infeasible_entry_decisions": sum(row["infeasible_entry_decisions"] for row in window_stats),
                                  "window_stats": window_stats}
                     stats.update({"update": update + 1, "loss": float(loss.item()),
                                   "return_mean": mean_return, "baseline": baseline,
@@ -763,6 +802,13 @@ def train(args: Any) -> dict[str, Any]:
                               "participation_fraction": 0.01, "initial_equity_usdt": 10000.0,
                               "maintenance_margin_fraction": 0.05,
                               "liquidation_surcharge_bps": 25},
+               "action_feasibility": {
+                   "protocol": "decision_mark_notional_mask_v1",
+                   "minimum_notional_usdt": MINIMUM_NOTIONAL_USDT,
+                   "entry_notional_cap_usdt": ENTRY_NOTIONAL_CAP_USDT,
+                   "lot_size_btc": LOT_BTC,
+                   "mask_inputs": ["decision_mark_price", "current_position_lots"],
+                   "excludes_next_minute_execution_volume": True},
                "seed": args.seed, "requested_device": args.device,
                "selected_device": str(device), "device_fallback_reason": fallback,
                "updates": args.updates, "transitions": transitions,

@@ -86,6 +86,14 @@ accounting run on CPU, while CUDA accelerates gradient updates. Each run records
 the cache manifest, engine source fingerprint, and binary hash. Relay-capture
 training retains Python replay.
 
+For historical training and RL inference, entry actions are masked while flat
+when the decision-time mark price implies a 0.001 BTC order below the frozen
+$50 minimum notional or above the $100 entry cap. The same mask is used for
+sampling and REINFORCE log probabilities. The mask does not inspect next-minute
+execution volume; the realized participation cap remains part of the ledger.
+Fixed baselines are not action-masked, so their attempted entries continue to
+be assessed by the shared fill simulator.
+
 The artifact contains a JSON model, compressed per-update trace, and manifest
 with input hashes, role-plan hash, trainer-code hash, cost settings, seed,
 resource limits, selected device, fallback reason, and summary statistics. It

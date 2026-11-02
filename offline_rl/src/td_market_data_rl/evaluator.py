@@ -13,11 +13,11 @@ import numpy as np
 
 from .contracts import (ACTION_TARGETS_LOTS, MAX_TRAIN_MINUTES, MINUTE_NS,
                         RELAY_ROOT, read_role_plan, read_verified_features,
-                        reject_system_temp, sha256_file)
+                        reject_system_temp, sha256_file, feasible_action_mask)
 from .learner import set_seed, simulate_episode
 from .factors import selected_factor_values, suites, registry_sha256
 from .historical import verify_plan as verify_historical_role_plan
-from .policy import ARCHITECTURES, load_actor
+from .policy import ARCHITECTURES, apply_action_mask, load_actor
 
 
 BASELINE_PATH = Path(__file__).with_name("baseline_strategies.json")
@@ -207,10 +207,12 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
                     _, values = selected_factor_values(feature["features"], training["factor_set_id"])
                     vector = [(value - means[index]) / scales[index]
                               for index, value in enumerate(values)] + [position]
+                    mask = feasible_action_mask(feature.get("mark_price"), position)
                     with torch.inference_mode():
-                        probabilities = torch.softmax(actor(torch.tensor(vector, dtype=torch.float32)), dim=0)
+                        logits = apply_action_mask(actor(torch.tensor(vector, dtype=torch.float32)), mask)
+                        probabilities = torch.softmax(logits, dim=0)
                         action = int(torch.multinomial(probabilities, 1, generator=rng).item())
-                    return action, None
+                    return action, None, mask
 
                 experiences, stats = simulate_episode(
                     input_feature_path, input_ledger_path,

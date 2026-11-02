@@ -22,7 +22,8 @@ from td_market_data_rl.analysis.validation_matrix import _initialize_evaluation_
 from td_market_data_rl.factors import registry_sha256, selected_factor_values
 from td_market_data_rl.historical import sha256_file, verify_plan
 from td_market_data_rl.learner import simulate_episode
-from td_market_data_rl.policy import load_actor
+from td_market_data_rl.policy import apply_action_mask, load_actor
+from td_market_data_rl.contracts import feasible_action_mask
 from td_market_data_rl.sweep import verify_sweep
 
 
@@ -60,6 +61,7 @@ def _evaluate_task(task: dict[str, Any]) -> dict[str, Any]:
             # A multiplier m adds log(m) to the flat-action logit. At equal
             # logits this gives P(flat)=m/(m+2), without overriding strong signals.
             logits[1] += math.log(multiplier)
+            logits = apply_action_mask(logits, feasible_action_mask(feature.get("mark_price"), position))
             action = int(torch.argmax(logits).item())
         action_counts[action] += 1
         return action, None
