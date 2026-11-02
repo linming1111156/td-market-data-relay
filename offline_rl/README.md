@@ -208,6 +208,69 @@ uv run --project offline_rl --extra laya \
   --artifact /mnt/data/td-market-data-local/research-inputs/laya-validation-v1
 ```
 
+Before concluding that Laya adds value, compare its frozen Validation result
+with fixed one-lot short and long controls under the same feasibility mask and
+the same fees, slippage, funding ledger, and terminal liquidation. The audit
+also carries forward the three-seed RL and NOOP results from the verified Laya
+report:
+
+```sh
+TMPDIR=/mnt/data/td-market-data-local/research-inputs/.tmp \
+uv run --project offline_rl \
+  python offline_rl/scripts/laya_simple_baseline_audit.py create \
+  --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json \
+  --training /mnt/data/td-market-data-local/research-inputs/vision-historical-raw-mlp-tanh8-action-mask-v1/training_runs/raw_baseline_v1-seed-101 \
+  --laya-artifact /mnt/data/td-market-data-local/research-inputs/laya-validation-v1 \
+  --output /mnt/data/td-market-data-local/research-inputs/laya-simple-baselines-v1
+```
+
+To test whether Laya uses the supplied return, volatility, and signed-volume
+features, run a separate full-window ablation. It zeros those seven values at
+each decision while retaining mark price, position, risk limits, prompt,
+checkpoint, and the historical accounting ledger. The report compares the
+ablation with the original frozen Laya artifact. This is an intervention on
+one Validation window, not independent evidence, and does not attribute signal
+importance to individual features:
+
+```sh
+TMPDIR=/mnt/data/td-market-data-local/research-inputs/.tmp \
+uv run --project offline_rl --extra laya \
+  python offline_rl/scripts/laya_signal_ablation.py create \
+  --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json \
+  --training /mnt/data/td-market-data-local/research-inputs/vision-historical-raw-mlp-tanh8-action-mask-v1/training_runs/raw_baseline_v1-seed-101 \
+  --laya-artifact /mnt/data/td-market-data-local/research-inputs/laya-validation-v1 \
+  --laya-config /path/to/local/laya_strategy.json \
+  --model-cache /mnt/data/td-market-data-local/model-cache/laya \
+  --temp-root /mnt/data/td-market-data-local/research-inputs/.tmp \
+  --output /mnt/data/td-market-data-local/research-inputs/laya-feature-ablation-v1
+```
+
+Both audit scripts support `verify`; it recomputes the fixed-control replay or
+full Laya ablation and checks the create-only report hash. These diagnostics
+read Validation only. Keep OOS reserved until the complete candidate is
+frozen.
+
+For regime sensitivity, `laya_monthly_regime_audit.py` reruns Laya and the
+fixed-position controls in separate UTC calendar-month episodes. Each episode
+starts flat and is liquidated at month end, so the monthly results are not
+additive to the continuous-window result:
+
+```sh
+TMPDIR=/mnt/data/td-market-data-local/research-inputs/.tmp \
+uv run --project offline_rl --extra laya \
+  python offline_rl/scripts/laya_monthly_regime_audit.py create \
+  --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json \
+  --training /mnt/data/td-market-data-local/research-inputs/vision-historical-raw-mlp-tanh8-action-mask-v1/training_runs/raw_baseline_v1-seed-101 \
+  --laya-artifact /mnt/data/td-market-data-local/research-inputs/laya-validation-v1 \
+  --laya-config /path/to/local/laya_strategy.json \
+  --model-cache /mnt/data/td-market-data-local/model-cache/laya \
+  --temp-root /mnt/data/td-market-data-local/research-inputs/.tmp \
+  --output /mnt/data/td-market-data-local/research-inputs/laya-monthly-validation-v1
+```
+
 To compare deterministic Validation inference with conservative flat-action
 priors on the existing frozen factor-sweep models:
 
