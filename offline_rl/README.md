@@ -156,6 +156,58 @@ The first-principles review of the current accounting, signal, and policy
 assumptions is recorded in
 [`docs/first-principles-strategy-audit-20261102.md`](docs/first-principles-strategy-audit-20261102.md).
 
+## Compare a local Laya policy with the frozen RL policy
+
+Laya is an optional, general pretrained typed-decision model. It is not a
+finance-trained predictor or an RL algorithm. Install the pinned optional
+dependency with `uv sync --locked --extra laya`; the base Relay and RL
+environments do not load Laya. The equivalent for a separately managed Python
+environment is `python -m pip install laya==0.4.14`.
+
+The policy prompt and its short/flat/long criteria are local strategy material
+and must stay out of Git. Supply a local JSON config with schema
+`td_market_data_laya_zero_shot_policy` using `--laya-config`. The config pins
+the model checkpoint revision. Keep the Hugging Face cache and temporary files
+under `/mnt/data`; the command below uses the existing historical Validation
+role only and does not read Test or OOS:
+
+```sh
+TMPDIR=/mnt/data/td-market-data-local/research-inputs/.tmp \
+uv run --project offline_rl --extra laya \
+  python offline_rl/scripts/laya_policy_validation.py create \
+  --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json \
+  --training /mnt/data/td-market-data-local/research-inputs/vision-historical-raw-mlp-tanh8-action-mask-v1/training_runs/raw_baseline_v1-seed-101 \
+  --laya-config /path/to/local/laya_strategy.json \
+  --model-cache /mnt/data/td-market-data-local/model-cache/laya \
+  --temp-root /mnt/data/td-market-data-local/research-inputs/.tmp \
+  --output /mnt/data/td-market-data-local/research-inputs/laya-validation-v1
+```
+
+The report runs the same chronological execution simulator and frozen cost
+case as the RL policy, and includes sampled RL, deterministic RL, and NOOP
+baselines. It records the checkpoint file hashes, strategy-config hash,
+resource limits, and action counts. `verify` recomputes the policies over the
+entire Validation window and checks that the artifact is unchanged. Laya's
+confidence values are not used. Treat a positive result as exploratory when
+Validation has already been used for model selection; it does not establish
+independent or live performance. Review action counts as well as net return: a
+one-sided position across nearly the whole window can reflect that window's
+market regime rather than a robust trading signal.
+
+```sh
+TMPDIR=/mnt/data/td-market-data-local/research-inputs/.tmp \
+uv run --project offline_rl --extra laya \
+  python offline_rl/scripts/laya_policy_validation.py verify \
+  --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v4.json \
+  --training /mnt/data/td-market-data-local/research-inputs/vision-historical-raw-mlp-tanh8-action-mask-v1/training_runs/raw_baseline_v1-seed-101 \
+  --laya-config /path/to/local/laya_strategy.json \
+  --model-cache /mnt/data/td-market-data-local/model-cache/laya \
+  --temp-root /mnt/data/td-market-data-local/research-inputs/.tmp \
+  --artifact /mnt/data/td-market-data-local/research-inputs/laya-validation-v1
+```
+
 To compare deterministic Validation inference with conservative flat-action
 priors on the existing frozen factor-sweep models:
 

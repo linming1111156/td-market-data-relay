@@ -12,6 +12,11 @@ dependencies = [
 [project.scripts]
 td-market-data-rl = "td_market_data_rl.cli:main"
 
+[project.optional-dependencies]
+laya = [
+    "laya==0.4.14",
+]
+
 [build-system]
 requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"

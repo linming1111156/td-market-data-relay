@@ -16,3 +16,4 @@ bulk_engine/target/
 /offline_rl/src/td_market_data_rl/factors.py
 /offline_rl/src/td_market_data_rl/factor_sets.json
 /offline_rl/src/td_market_data_rl/baseline_strategies.json
+/offline_rl/src/td_market_data_rl/laya_strategy.json
