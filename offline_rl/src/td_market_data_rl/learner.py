@@ -341,7 +341,10 @@ def train(args: Any) -> dict[str, Any]:
     actor = torch.nn.Linear(len(factor_names) + 1, len(ACTION_TARGETS_LOTS), bias=True, device=device)
     torch.nn.init.zeros_(actor.weight)
     torch.nn.init.zeros_(actor.bias)
-    optimizer = torch.optim.SGD(actor.parameters(), lr=0.1)
+    historical_training = historical_manifest is not None
+    learning_rate = 30.0 if historical_training else 0.1
+    optimizer = torch.optim.SGD(actor.parameters(), lr=learning_rate)
+    entropy_bonus = 0.0
     baseline = 0.0
     baseline_initialized = False
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -389,12 +392,36 @@ def train(args: Any) -> dict[str, Any]:
                             running_return = rewards[offset + index] + 0.99 * running_return
                             returns[offset + index] = running_return
                         offset += len(episode)
-                    log_probs = torch.log_softmax(actor(states), dim=1).gather(1, actions[:, None]).squeeze(1)
-                    advantages = returns - baseline
-                    loss = -(log_probs * advantages.detach()).mean()
+                    logits = actor(states)
+                    all_log_probs = torch.log_softmax(logits, dim=1)
+                    log_probs = all_log_probs.gather(1, actions[:, None]).squeeze(1)
+                    if historical_training:
+                        # Returns are fractional equity changes, often around 1e-5.
+                        # Centering and scaling within each Train update keeps the
+                        # REINFORCE gradient numerically useful without looking at
+                        # Validation/Test/OOS outcomes.
+                        advantages = returns - returns.mean()
+                        advantage_scale = advantages.std(unbiased=False)
+                        if float(advantage_scale.item()) > 1e-8:
+                            advantages = advantages / advantage_scale
+                        else:
+                            advantages = torch.zeros_like(advantages)
+                    else:
+                        advantages = returns - baseline
+                        advantage_scale = advantages.std(unbiased=False)
+                    probabilities = all_log_probs.exp()
+                    entropy = -(probabilities * all_log_probs).sum(dim=1).mean()
+                    action_counts = [int((actions == index).sum().item())
+                                     for index in range(len(ACTION_TARGETS_LOTS))]
+                    action_return_means = [
+                        float(returns[actions == index].mean().item())
+                        if action_counts[index] else 0.0
+                        for index in range(len(ACTION_TARGETS_LOTS))]
+                    policy_loss = -(log_probs * advantages.detach()).mean()
+                    loss = policy_loss - entropy_bonus * entropy
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(actor.parameters(), 10.0)
+                    gradient_norm = torch.nn.utils.clip_grad_norm_(actor.parameters(), 10.0)
                     optimizer.step()
                     mean_return = float(returns.mean().item())
                     baseline = mean_return if not baseline_initialized else 0.9 * baseline + 0.1 * mean_return
@@ -417,7 +444,13 @@ def train(args: Any) -> dict[str, Any]:
                                  "traded_notional_usdt": sum(row["traded_notional_usdt"] for row in window_stats),
                                  "window_stats": window_stats}
                     stats.update({"update": update + 1, "loss": float(loss.item()),
-                                  "return_mean": mean_return, "baseline": baseline})
+                                  "return_mean": mean_return, "baseline": baseline,
+                                  "advantage_std": float(advantage_scale.item()),
+                                  "policy_loss": float(policy_loss.item()),
+                                  "gradient_norm_before_clip": float(gradient_norm.item()),
+                                  "entropy": float(entropy.item()),
+                                  "action_counts_short_flat_long": action_counts,
+                                  "discounted_return_mean_short_flat_long": action_return_means})
                     episode_stats.append(stats)
                     transitions += len(experiences)
                     line = canonical(stats) + b"\n"
@@ -446,10 +479,17 @@ def train(args: Any) -> dict[str, Any]:
                "trainer_code_sha256": trainer_code_sha256(),
                "role": "train", "train_window": train_window,
                "factor_set_id": args.factor_set, "factor_set_sha256": registry_sha256(),
-               "algorithm": {"name": "linear_categorical_reinforce", "gamma": 0.99,
-                             "baseline": "scalar exponential moving average alpha=0.1",
-                             "optimizer": "SGD", "learning_rate": 0.1,
-                             "gradient_norm_clip": 10.0, "entropy_bonus": 0.0},
+               "algorithm": {"name": ("linear_categorical_reinforce_train_standardized_v2"
+                                        if historical_training else "linear_categorical_reinforce"),
+                             "gamma": 0.99,
+                             "baseline": ("per-update return mean"
+                                          if historical_training
+                                          else "scalar exponential moving average alpha=0.1"),
+                             "optimizer": "SGD", "learning_rate": learning_rate,
+                             "gradient_norm_clip": 10.0, "entropy_bonus": entropy_bonus,
+                             "historical_advantage_normalization":
+                                 "per-update centered and population-standardized; epsilon=1e-8"
+                                 if historical_training else "disabled"},
                "accounting": {"fee_bps": args.fee_bps, "slippage_bps": args.slippage_bps,
                               "max_position_lots": 1, "entry_notional_cap_usdt": 100.0,
                               "participation_fraction": 0.01, "initial_equity_usdt": 10000.0,
