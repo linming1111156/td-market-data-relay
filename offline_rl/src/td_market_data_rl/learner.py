@@ -358,10 +358,13 @@ def simulate_episode(feature_path: Path, ledger_path: Path, window: dict[str, in
     current_action = 1
     decisions = fills = 0
     total_fees = total_slippage = funding_pnl = gross_pnl = 0.0
+    terminal_close_cost = 0.0
     traded_btc = traded_notional = 0.0
     ready_minutes = valid_mark_minutes = exposure_minutes = 0
     minute_count = 0
+    last_ledger: dict[str, Any] | None = None
     for feature, ledger in rows_in_window(feature_path, ledger_path, start, end):
+        last_ledger = ledger
         minute_count += 1
         if minute_count % 4096 == 0:
             rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
@@ -388,31 +391,54 @@ def simulate_episode(feature_path: Path, ledger_path: Path, window: dict[str, in
         max_equity = max(max_equity, equity)
         if max_equity > 0:
             min_drawdown = min(min_drawdown, (equity - max_equity) / max_equity)
-        if not feature["decision_due"]:
+        if not feature["decision_due"] or minute_count == (end - start) // MINUTE_NS:
             continue
-        if collect_experiences and current_state is not None:
-            reward = pending_reward - pending_cost
-            experiences.append((current_state, current_action, reward / 10_000.0))
-        pending_reward = 0.0
-        pending_cost = 0.0
         if not feature["feature_ready"]:
+            if collect_experiences and current_state is not None:
+                reward = pending_reward - pending_cost
+                experiences.append((current_state, current_action, reward / 10_000.0))
+            pending_reward = 0.0
+            pending_cost = 0.0
             current_state = None
             continue
         action, state = select_action(feature, position)
         if not isinstance(action, int) or isinstance(action, bool) or action not in (0, 1, 2):
             raise ValueError("policy returned an invalid categorical action")
         target_lots = ACTION_TARGETS_LOTS[action]
+        position_before_fill = position
         position, cost, _, filled = apply_fill(position, target_lots, ledger, fee_bps, slippage_bps)
         if filled:
+            execution_price = ledger["execution_vwap"]
+            if position_before_fill and execution_price is not None:
+                reference_price = price if price is not None else previous_mark
+                if reference_price is not None:
+                    fill_interval_pnl = position_before_fill * LOT_BTC * (execution_price - reference_price)
+                    equity += fill_interval_pnl
+                    pending_reward += fill_interval_pnl
+                    gross_pnl += fill_interval_pnl
+                    max_equity = max(max_equity, equity)
+                    if max_equity > 0:
+                        min_drawdown = min(min_drawdown, (equity - max_equity) / max_equity)
             fills += 1
             traded_btc += abs(filled) * LOT_BTC
-            traded_notional += abs(filled) * LOT_BTC * ledger["execution_vwap"]
-            fees = abs(filled * LOT_BTC * (ledger["execution_vwap"] or 0)) * fee_bps / 10_000
+            traded_notional += abs(filled) * LOT_BTC * execution_price
+            fees = abs(filled * LOT_BTC * execution_price) * fee_bps / 10_000
             slippage = cost - fees
             equity -= cost
             pending_cost += cost
             total_fees += fees
             total_slippage += slippage
+            # The position after this fill earns from the post-decision VWAP,
+            # not from the mark close that was known when the action was chosen.
+            previous_mark = execution_price
+        # The previous action remains in force from this decision mark until
+        # the execution VWAP. Close its reward only after accounting for that
+        # interval, or its last return segment is assigned to the wrong action.
+        if collect_experiences and current_state is not None:
+            reward = pending_reward - pending_cost
+            experiences.append((current_state, current_action, reward / 10_000.0))
+        pending_reward = 0.0
+        pending_cost = 0.0
         # Margin guard is adverse liquidation at the explicit maintenance margin.
         if price is not None and position and abs(position) * LOT_BTC * price * 0.05 >= equity:
             liquidation_fee = abs(position) * LOT_BTC * price * 0.0025
@@ -425,12 +451,44 @@ def simulate_episode(feature_path: Path, ledger_path: Path, window: dict[str, in
             min_drawdown = min(min_drawdown, (equity - max_equity) / max_equity)
         current_state, current_action = state, action
         decisions += 1
+    # Settle any remaining position at the final post-decision execution minute.
+    # This minute ends exactly at the half-open role-window boundary.
+    if position:
+        if last_ledger is None or last_ledger.get("execution_vwap") is None:
+            raise ValueError("open terminal position has no in-window execution VWAP for liquidation")
+        terminal_price = last_ledger["execution_vwap"]
+        if previous_mark is not None:
+            terminal_pnl = position * LOT_BTC * (terminal_price - previous_mark)
+            equity += terminal_pnl
+            pending_reward += terminal_pnl
+            gross_pnl += terminal_pnl
+            max_equity = max(max_equity, equity)
+            if max_equity > 0:
+                min_drawdown = min(min_drawdown, (equity - max_equity) / max_equity)
+        position_before_close = position
+        position, cost, _, filled = apply_fill(position, 0, last_ledger, fee_bps, slippage_bps)
+        if position != 0 or filled != -position_before_close:
+            raise ValueError("terminal position could not be fully liquidated inside the role window")
+        fees = abs(filled * LOT_BTC * terminal_price) * fee_bps / 10_000
+        terminal_close_cost = cost
+        equity -= cost
+        pending_cost += cost
+        total_fees += fees
+        total_slippage += cost - fees
+        fills += 1
+        traded_btc += abs(filled) * LOT_BTC
+        traded_notional += abs(filled) * LOT_BTC * terminal_price
+        previous_mark = terminal_price
+        max_equity = max(max_equity, equity)
+        if max_equity > 0:
+            min_drawdown = min(min_drawdown, (equity - max_equity) / max_equity)
     if collect_experiences and current_state is not None:
         experiences.append((current_state, current_action,
                             (pending_reward - pending_cost) / 10_000.0))
     stats = {"minutes": minute_count, "decisions": decisions, "fills": fills,
              "gross_price_pnl_usdt": gross_pnl, "funding_pnl_usdt": funding_pnl,
              "fees_usdt": total_fees, "slippage_usdt": total_slippage,
+             "terminal_close_cost_usdt": terminal_close_cost,
              "ending_equity_usdt": equity, "max_drawdown_fraction": min_drawdown,
              "net_pnl_usdt": equity - 10_000.0,
              "net_return_fraction": (equity - 10_000.0) / 10_000.0,

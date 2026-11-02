@@ -53,6 +53,7 @@ struct Stats {
     funding_pnl_usdt: f64,
     fees_usdt: f64,
     slippage_usdt: f64,
+    terminal_close_cost_usdt: f64,
     ending_equity_usdt: f64,
     max_drawdown_fraction: f64,
     net_pnl_usdt: f64,
@@ -318,6 +319,7 @@ fn run_window(
     let mut current_action = 1u8;
     let mut experiences = Vec::new();
     let mut stats = Stats::default();
+    let mut last_execution: Option<(f64, f64)> = None;
     let mut reward_sum = 0.0;
     let mut rng = request.seed ^ ((index as u64 + 1) * 0x9e3779b97f4a7c15);
     if rng == 0 {
@@ -329,6 +331,11 @@ fn run_window(
             check_rss_limit(request.memory_limit_mb)?;
         }
         stats.minutes += 1;
+        last_execution = if row.flags & 8 != 0 {
+            Some((row.vwap, row.volume))
+        } else {
+            None
+        };
         let mark = if row.flags & 4 != 0 {
             Some(row.mark)
         } else {
@@ -363,21 +370,22 @@ fn run_window(
         if max_equity > 0.0 {
             drawdown = drawdown.min((equity - max_equity) / max_equity);
         }
-        if row.flags & 1 == 0 {
+        if row.flags & 1 == 0 || stats.minutes == window.minute_count {
             continue;
         }
-        if let Some(state) = current_state.take() {
-            let reward = (pending_reward - pending_cost) / 10_000.0;
-            reward_sum += reward;
-            experiences.push(Experience {
-                state,
-                action: current_action,
-                reward: reward as f32,
-            });
-        }
-        pending_reward = 0.0;
-        pending_cost = 0.0;
+        let previous_state = current_state.take();
         if !ready {
+            if let Some(state) = previous_state {
+                let reward = (pending_reward - pending_cost) / 10_000.0;
+                reward_sum += reward;
+                experiences.push(Experience {
+                    state,
+                    action: current_action,
+                    reward: reward as f32,
+                });
+            }
+            pending_reward = 0.0;
+            pending_cost = 0.0;
             continue;
         }
         let mut state = Vec::with_capacity(request.factor_names.len() + 1);
@@ -392,6 +400,7 @@ fn run_window(
         } else {
             None
         };
+        let position_before_fill = position;
         let (after, cost, filled) = fill(
             position,
             target,
@@ -402,6 +411,20 @@ fn run_window(
         )?;
         position = after;
         if filled != 0 {
+            if position_before_fill != 0 {
+                if let (Some(reference), Some(execution)) = (mark, price) {
+                    let fill_interval_pnl = position_before_fill as f64
+                        * LOT_BTC
+                        * (execution - reference);
+                    equity += fill_interval_pnl;
+                    pending_reward += fill_interval_pnl;
+                    stats.gross_price_pnl_usdt += fill_interval_pnl;
+                    max_equity = max_equity.max(equity);
+                    if max_equity > 0.0 {
+                        drawdown = drawdown.min((equity - max_equity) / max_equity);
+                    }
+                }
+            }
             stats.fills += 1;
             stats.traded_btc += (filled as f64 * LOT_BTC).abs();
             let notional = (filled as f64 * LOT_BTC * price.unwrap()).abs();
@@ -411,7 +434,21 @@ fn run_window(
             stats.slippage_usdt += cost - fees;
             equity -= cost;
             pending_cost += cost;
+            // The post-fill position's next mark-to-market starts at the
+            // execution VWAP, not the mark that was known at decision time.
+            previous_mark = price;
         }
+        if let Some(state) = previous_state {
+            let reward = (pending_reward - pending_cost) / 10_000.0;
+            reward_sum += reward;
+            experiences.push(Experience {
+                state,
+                action: current_action,
+                reward: reward as f32,
+            });
+        }
+        pending_reward = 0.0;
+        pending_cost = 0.0;
         if let Some(price) = mark {
             if position != 0 && (position as f64 * LOT_BTC * price * 0.05) >= equity {
                 let liquidation_fee = (position as f64 * LOT_BTC * price).abs() * 0.0025;
@@ -428,6 +465,48 @@ fn run_window(
         current_state = Some(state.into_iter().map(|x| x as f32).collect());
         current_action = action;
         stats.decisions += 1;
+    }
+    if position != 0 {
+        let (execution, volume) = last_execution
+            .ok_or_else(|| format!("window {} has an open terminal position without an in-window execution VWAP", window.id))?;
+        let reference = previous_mark
+            .ok_or_else(|| format!("window {} has an open terminal position without a prior mark", window.id))?;
+        let terminal_pnl = position as f64 * LOT_BTC * (execution - reference);
+        equity += terminal_pnl;
+        pending_reward += terminal_pnl;
+        stats.gross_price_pnl_usdt += terminal_pnl;
+        max_equity = max_equity.max(equity);
+        if max_equity > 0.0 {
+            drawdown = drawdown.min((equity - max_equity) / max_equity);
+        }
+
+        let position_before_close = position;
+        let (after, cost, filled) = fill(
+            position,
+            0,
+            Some(execution),
+            volume,
+            request.fee_bps,
+            request.slippage_bps,
+        )?;
+        if after != 0 || filled != -position_before_close {
+            return Err(format!("window {} could not fully liquidate its terminal position", window.id));
+        }
+        position = after;
+        let notional = (filled as f64 * LOT_BTC * execution).abs();
+        let fees = notional * request.fee_bps / 10_000.0;
+        stats.fills += 1;
+        stats.traded_btc += (filled as f64 * LOT_BTC).abs();
+        stats.traded_notional_usdt += notional;
+        stats.fees_usdt += fees;
+        stats.slippage_usdt += cost - fees;
+        stats.terminal_close_cost_usdt = cost;
+        equity -= cost;
+        pending_cost += cost;
+        max_equity = max_equity.max(equity);
+        if max_equity > 0.0 {
+            drawdown = drawdown.min((equity - max_equity) / max_equity);
+        }
     }
     if let Some(state) = current_state {
         let reward = (pending_reward - pending_cost) / 10_000.0;

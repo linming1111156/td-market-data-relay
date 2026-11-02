@@ -48,19 +48,33 @@ current fixed-lot model does not implement that intent. The `$50` minimum and
 `$100` cap also need to be reconciled with the actual historical contract
 filters and the user's previously specified minimum-order rule.
 
-### 2. Episode-end positions are marked, not liquidated
+### 2. Fill-time accounting and episode-end positions were inconsistent
 
-Both Python `simulate_episode` and Rust `training_replay::run_window` report
-the ending position and mark-to-market equity, then stop without a closing
-fill. Training starts a fresh flat episode on the next update. For example,
+Before correction, Python `simulate_episode` and Rust
+`training_replay::run_window` reported the ending position and mark-to-market
+equity, then stopped without a closing fill. Training starts a fresh flat
+episode on the next update. For example,
 `trend_v1-seed-101` update 20 ended Train window `train-02` at `-1` lot with
 `closed_at_end=false`; the next replay starts at zero. No exit fee or slippage
 is charged at that boundary. Validation reports can also end with exposure.
 
-This is a boundary-accounting mismatch. Either each episode must close at an
-executable final price and include its costs, or the contract must explicitly
-carry the position into the next episode. The current independent-episode
-design does neither.
+That left exit fees and slippage uncharged. A second mismatch was found while
+correcting the boundary: the action is chosen at a decision mark, but its fill
+uses the following minute's aggregate-trade VWAP. The old position remains
+exposed until that VWAP. Earlier replay credited the new position with the
+decision-mark-to-next-mark return, even though the modeled fill happened later,
+and failed to attribute the old position's decision-mark-to-fill return to its
+action. This can distort equity and REINFORCE rewards. The corrected ledger
+marks the old position through the execution VWAP and starts the new position's
+mark basis at that VWAP. The final decision is skipped when its execution
+interval is also the role-window's terminal liquidation interval, so replay
+cannot open and close at the same aggregate VWAP.
+
+Independent episodes now close remaining exposure at the last in-window VWAP
+and include closing costs. This remains an approximation: one-minute VWAP does
+not model exact order arrival, spread, queue, or market impact. Recompute
+training and Validation artifacts with the corrected accounting before using
+old performance numbers to rank factors.
 
 The data can support a clean terminal close without reading outside the role
 window: each last feature row's post-decision execution minute ends exactly at
@@ -68,9 +82,9 @@ the frozen window end. Its aggregate-trade volumes are 466.987 BTC for
 `train-01`, 5.981 BTC for `train-02`, and 54.226 BTC for `validation-01`, each
 well above the 0.001 BTC lot under the 1% participation cap. A one-lot exit at
 those terminal VWAPs would cost about `$0.17`, `$0.13`, and `$0.10`
-respectively under the current 10+5 bps scenario. The boundary omission is a
-correctness issue, though its direct cost is small relative to the observed
-strategy losses.
+respectively under the current 10+5 bps scenario. The direct terminal fee is
+small compared with observed strategy losses, but the prior position-basis
+error can change action rewards and therefore invalidates old rankings.
 
 ### 3. The measured factor signal is small relative to the modeled cost hurdle
 
@@ -101,16 +115,23 @@ The policy already has a flat target action and the evaluation roster includes
 NOOP. The trainer samples a categorical action every 15 minutes. Entropy is
 logged but its bonus is fixed at zero. There is no explicit confidence or
 cost-clearing threshold that keeps the policy flat when its estimated edge is
-weak.
+weak. A flat preference must be part of the action distribution used by both
+sampling and gradient calculations; changing sampled actions after the fact
+would make REINFORCE optimize a different distribution from the one evaluated.
+Flat should remain the default unless estimated net edge clears costs and a
+risk margin. A fixed flat-logit bonus is a hypothesis to validate, not an
+established optimum.
 
 ### 5. Execution and objective assumptions are still research placeholders
 
 The account protocol uses a fixed 1% participation cap, next-minute
 aggregate-trade VWAP, fixed 5 bps slippage, fixed 10 bps fees, and no
 order-book queue or spread model. Funding is applied from the frozen settlement
-ledger. The accounting is deterministic and internally mirrored in Rust and
-Python, but these fixed execution assumptions have not been established as
-realistic fills for the target account or historical exchange filters.
+ledger. Rust and Python now use the same decision-to-fill basis and
+terminal-close rules, but equivalence still needs verification by replaying
+frozen inputs after rebuilding both paths. These execution assumptions have
+not been established as realistic fills for the target account or historical
+exchange filters.
 
 The learner is a three-action linear categorical REINFORCE policy with 20
 updates, a 15-minute action cadence, and `gamma=0.99` per decision. This is a
@@ -123,12 +144,13 @@ the actionability and cost model is unlikely to solve the observed gap.
    minimum notional, maximum entry notional, maximum position, and behavior
    when the minimum valid order exceeds the risk cap. Bind their source and
    effective dates. Keep the result flat when no valid order fits.
-2. Version the account protocol and settle every episode boundary. Record
-   both marked equity and net liquidation equity, and use the latter for
-   terminal reward and comparisons.
-3. Keep flat as the default action. Permit entry only when an independently
-   estimated expected move clears fees, slippage, Funding, and a risk margin;
-   add persistence/hysteresis so small signal changes do not churn positions.
+2. Rebuild Rust and Python replay paths, then recompute Train and Validation
+   artifacts with corrected fill-time accounting and terminal settlement.
+   Record marked equity and net liquidation equity separately.
+3. Keep flat as the default action. Make order feasibility explicit and permit
+   entry only when an independently estimated expected move clears fees,
+   slippage, Funding, and a risk margin; add persistence/hysteresis so small
+   signal changes do not churn positions.
 4. Validate signal hypotheses on Train, then compare the frozen policy with
    NOOP and simple baselines on Validation across fixed training seeds. Require
    net-of-cost improvement and reasonable turnover before opening Test/OOS.
