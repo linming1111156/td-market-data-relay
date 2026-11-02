@@ -16,6 +16,7 @@ from .contracts import (MAX_TRAIN_MINUTES, MINUTE_NS, RELAY_ROOT,
                         read_role_plan, read_verified_features, reject_system_temp, sha256_file)
 from .evaluator import create_report, verify_report
 from .factors import suites, registry_sha256
+from .historical import create_role_plan, verify_plan
 from .learner import train
 
 
@@ -182,6 +183,18 @@ def make_parser() -> argparse.ArgumentParser:
         roles.add_argument(f"--{role}-end", type=parse_time, required=role in ("train", "validation"))
     roles.add_argument("--output", type=Path, required=True)
     roles.set_defaults(func=role_plan)
+    historical_roles = commands.add_parser(
+        "historical-role-plan", help="freeze audited, possibly discontinuous Vision history windows")
+    historical_roles.add_argument("--historical-inputs", type=Path, required=True)
+    historical_roles.add_argument("--output", type=Path, required=True)
+    historical_roles.set_defaults(func=create_role_plan)
+    historical_role_verifier = commands.add_parser(
+        "verify-historical-role-plan", help="verify historical role-plan hash and source binding")
+    historical_role_verifier.add_argument("--historical-inputs", type=Path, required=True)
+    historical_role_verifier.add_argument("--role-plan", type=Path, required=True)
+    historical_role_verifier.set_defaults(
+        func=lambda args: verify_plan(args.role_plan.resolve(strict=True),
+                                      args.historical_inputs.resolve(strict=True)))
     learner = commands.add_parser("train", help="train the linear categorical policy on Train only")
     learner.add_argument("--features", type=Path, required=True)
     learner.add_argument("--dataset", type=Path, required=True)
@@ -229,6 +242,8 @@ def main() -> None:
         raise SystemExit(f"offline USD-M RL rejected: {error}") from error
     if args.command == "role-plan":
         print(f"immutable role plan created: {args.output.resolve()}")
+    elif args.command == "historical-role-plan":
+        print(f"immutable historical role plan created: {args.output.resolve()}")
     elif args.command == "train":
         print(f"offline RL training complete: device={result['selected_device']} updates={result['updates']} transitions={result['transitions']}")
         print(f"artifact: {args.output.resolve()}")
@@ -238,5 +253,7 @@ def main() -> None:
     else:
         if args.command == "verify-run":
             print(f"training artifact valid: updates={result['updates']} transitions={result['transitions']}")
+        elif args.command == "verify-historical-role-plan":
+            print(f"historical role plan valid: {result['plan_fingerprint_sha256']}")
         else:
             print("evaluation report verified by recomputing held-out results")

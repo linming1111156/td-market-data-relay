@@ -20,7 +20,15 @@ offline_rl/.venv/bin/python prepare_vision_historical_rl_inputs.py \
   --output /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v4
 
 offline_rl/.venv/bin/python verify_vision_historical_rl_inputs.py \
-  --artifact /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v1
+  --artifact /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3
+
+offline_rl/.venv/bin/td-market-data-rl historical-role-plan \
+  --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
+  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v2.json
+
+offline_rl/.venv/bin/td-market-data-rl verify-historical-role-plan \
+  --historical-inputs /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/td-market-data-local/research-inputs/vision-historical-role-plan-v2.json
 ```
 
 The builder checks archived Mark and aggregate-trade hashes against the bulk
@@ -49,6 +57,12 @@ assigned to a training ledger. Funding timestamps are mapped to the UTC minute
 containing their settlement timestamp. They retain the exchange event time and
 are marked `available_at_ns: null`: Binance Vision does not provide the local
 publication/receipt time needed to claim when the event became observable.
+
+The historical role plan command freezes the audit-derived half-open windows
+without requiring them to cover unreliable intervals. Its fingerprint binds the
+input manifest, historical feature and Funding semantics, exact per-window
+shard hashes, role-plan implementation hash, and role assignments. It is
+create-only; verification checks the frozen plan against the input artifact.
 
 The role windows are half-open intervals from the audit. The 60-minute feature
 warmup and observed source gaps remain excluded. No rows are filled or

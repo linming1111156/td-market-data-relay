@@ -62,7 +62,9 @@ def rows(path: Path):
             yield value
 
 
-def verify(root: Path, adapter_path: Path | None) -> dict[str, Any]:
+def verify(root: Path, adapter_path: Path | None = None) -> dict[str, Any]:
+    if adapter_path is None:
+        adapter_path = Path(__file__).with_name("prepare_vision_historical_rl_inputs.py")
     if root.is_symlink() or not root.is_dir():
         raise ValueError("artifact root must be a regular directory")
     manifest_path = root / "manifest.json"
