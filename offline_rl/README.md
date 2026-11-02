@@ -6,6 +6,11 @@ only on the immutable Train window, and writes a hash-bound, create-only run
 artifact. It does not connect to QuestDB, Binance APIs, Gateway, or a live
 account.
 
+Strategy factor implementations, factor registries, and baseline strategy
+definitions are local-only and excluded from Git. A fresh clone needs those
+private files installed under `src/td_market_data_rl/` before training or
+evaluation can run.
+
 ## Environment
 
 Python 3.13 and `uv` are required. Dependencies are pinned in `pyproject.toml`
@@ -75,12 +80,46 @@ with input hashes, role-plan hash, trainer-code hash, cost settings, seed,
 resource limits, selected device, fallback reason, and summary statistics. It
 is a research artifact, not a production model or trading authorization.
 
+## Compare with frozen baselines
+
+Evaluation reads only the role plan's Validation/Test/OOS windows. It never
+updates the trained policy. Every strategy uses the same minute-by-minute
+accounting implementation, fees, slippage, funding settlements, trade
+participation, notional and position bounds, and starting equity. The strategy
+roster and its factor definitions are supplied by the local-only files noted
+above.
+
+```sh
+uv run td-market-data-rl evaluate \
+  --dataset /data/td-market-data-usdm-rl-datasets/BTCUSDT-fixed-v1 \
+  --features /data/td-market-data-usdm-rl-features/BTCUSDT-fixed-v1 \
+  --role-plan /data/td-market-data-usdm-rl-runs/role-plan-v1.json \
+  --training /data/td-market-data-usdm-rl-runs/pilot-v1 \
+  --seeds 101,202,303 \
+  --output /data/td-market-data-usdm-rl-runs/comparison-v1
+
+uv run td-market-data-rl verify-evaluation \
+  --artifact /data/td-market-data-usdm-rl-runs/comparison-v1 \
+  --dataset /data/td-market-data-usdm-rl-datasets/BTCUSDT-fixed-v1 \
+  --features /data/td-market-data-usdm-rl-features/BTCUSDT-fixed-v1 \
+  --role-plan /data/td-market-data-usdm-rl-runs/role-plan-v1.json \
+  --training /data/td-market-data-usdm-rl-runs/pilot-v1
+```
+
+The evaluator requires that the trained artifact's input hashes and role-plan
+hash exactly match its supplied inputs. The report records net equity, mark
+P&L, Funding P&L, fees, slippage, turnover, drawdown, exposure, and mark/feature
+coverage for every held-out role, seed, and strategy. `verify-evaluation`
+recomputes the report and compares its hash, so repeatability is checked against
+the original fixed inputs and pinned runtime.
+
 ## Current limits
 
 - Up to 525,600 Train minutes, 20 policy updates, 8 GiB process RSS, and an
   explicitly capped CUDA allocation. There is no unbounded replay buffer.
 - The policy is deliberately small and reuses the previously frozen
-  REINFORCE baseline semantics. This phase does not claim strategy quality.
-- Model-selection and reporting on Validation/Test/OOS, cost-matched baselines,
-  end-to-end use of a newly recovered real capture, and acceptance review are
-  later phases.
+  REINFORCE baseline semantics. Candidate inputs remain research hypotheses,
+  not established predictors or trading advice.
+- The short end-to-end capture is only a pipeline smoke sample. It is too short
+  to rank factor suites; wait for a longer fixed Dataset and keep Test/OOS
+  windows untouched until a factor choice is frozen.

@@ -12,8 +12,10 @@ from typing import Any
 import torch
 import zstandard
 
-from .contracts import (FEATURE_NAMES, MAX_TRAIN_MINUTES, MINUTE_NS, RELAY_ROOT,
+from .contracts import (MAX_TRAIN_MINUTES, MINUTE_NS, RELAY_ROOT,
                         read_role_plan, read_verified_features, reject_system_temp, sha256_file)
+from .evaluator import create_report, verify_report
+from .factors import suites, registry_sha256
 from .learner import train
 
 
@@ -30,6 +32,16 @@ def parse_time(value: str) -> int:
     if ns % MINUTE_NS:
         raise argparse.ArgumentTypeError("role boundaries must align to a UTC minute")
     return ns
+
+
+def parse_seeds(value: str) -> list[int]:
+    try:
+        seeds = [int(item) for item in value.split(",")]
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("seeds must be comma-separated integers") from error
+    if not seeds or any(seed < 0 for seed in seeds):
+        raise argparse.ArgumentTypeError("seeds must be nonnegative integers")
+    return seeds
 
 
 def role_plan(args: Any) -> dict[str, Any]:
@@ -111,10 +123,17 @@ def verify_run(args: Any) -> dict[str, Any]:
     if (sha256_file(artifact / "model.json") != manifest.get("model_sha256")
             or sha256_file(artifact / "training_trace.jsonl.zst") != manifest.get("trace_sha256")):
         raise ValueError("run artifact file hash mismatch")
-    if model.get("feature_names") != list(FEATURE_NAMES) or len(model.get("weights", [])) != 3:
-        raise ValueError("model feature/action shape invalid")
+    factor_set_id = model.get("factor_set_id", "raw_baseline_v1")
+    factor_names = suites().get(factor_set_id)
+    if (factor_names is None or model.get("feature_names") != factor_names
+            or len(model.get("weights", [])) != 3):
+        raise ValueError("model factor-set/action shape invalid")
+    if (model.get("factor_set_sha256", registry_sha256()) != registry_sha256()
+            or manifest.get("factor_set_id", "raw_baseline_v1") != factor_set_id
+            or manifest.get("factor_set_sha256", registry_sha256()) != registry_sha256()):
+        raise ValueError("model factor-set registry hash mismatch")
     rows = model["weights"]
-    if (any(len(row) != 8 or any(not math.isfinite(value) for value in row) for row in rows)
+    if (any(len(row) != len(factor_names) + 1 or any(not math.isfinite(value) for value in row) for row in rows)
             or len(model.get("bias", [])) != 3
             or any(not math.isfinite(value) for value in model["bias"])):
         raise ValueError("model parameters are malformed")
@@ -171,6 +190,8 @@ def make_parser() -> argparse.ArgumentParser:
     learner.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     learner.add_argument("--updates", type=int, default=1)
     learner.add_argument("--seed", type=int, default=101)
+    learner.add_argument("--factor-set", choices=sorted(suites()), default="raw_baseline_v1",
+                         help="predeclared causal factor suite; compare suites as separate runs")
     learner.add_argument("--fee-bps", type=int, default=10)
     learner.add_argument("--slippage-bps", type=int, default=5)
     learner.add_argument("--max-memory-mb", type=int, default=4096)
@@ -181,6 +202,21 @@ def make_parser() -> argparse.ArgumentParser:
     verifier.add_argument("--features", type=Path)
     verifier.add_argument("--dataset", type=Path)
     verifier.set_defaults(func=verify_run)
+    evaluator = commands.add_parser("evaluate", help="compare frozen policy and baselines on held-out windows")
+    evaluator.add_argument("--features", type=Path, required=True)
+    evaluator.add_argument("--dataset", type=Path, required=True)
+    evaluator.add_argument("--role-plan", type=Path, required=True)
+    evaluator.add_argument("--training", type=Path, required=True)
+    evaluator.add_argument("--seeds", type=parse_seeds, default=[101, 202, 303])
+    evaluator.add_argument("--output", type=Path, required=True)
+    evaluator.set_defaults(func=create_report)
+    evaluation_verifier = commands.add_parser("verify-evaluation", help="recompute and verify a comparison report")
+    evaluation_verifier.add_argument("--artifact", type=Path, required=True)
+    evaluation_verifier.add_argument("--features", type=Path, required=True)
+    evaluation_verifier.add_argument("--dataset", type=Path, required=True)
+    evaluation_verifier.add_argument("--role-plan", type=Path, required=True)
+    evaluation_verifier.add_argument("--training", type=Path, required=True)
+    evaluation_verifier.set_defaults(func=verify_report)
     return parser
 
 
@@ -196,5 +232,11 @@ def main() -> None:
     elif args.command == "train":
         print(f"offline RL training complete: device={result['selected_device']} updates={result['updates']} transitions={result['transitions']}")
         print(f"artifact: {args.output.resolve()}")
+    elif args.command == "evaluate":
+        print(f"baseline comparison created: strategies=4 seeds={len(args.seeds)}")
+        print(f"artifact: {args.output.resolve()}")
     else:
-        print(f"training artifact valid: updates={result['updates']} transitions={result['transitions']}")
+        if args.command == "verify-run":
+            print(f"training artifact valid: updates={result['updates']} transitions={result['transitions']}")
+        else:
+            print("evaluation report verified by recomputing held-out results")

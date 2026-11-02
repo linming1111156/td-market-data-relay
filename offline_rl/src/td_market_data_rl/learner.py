@@ -16,10 +16,11 @@ import numpy as np
 import torch
 import zstandard
 
-from .contracts import (ACTION_TARGETS_LOTS, FEATURE_NAMES, LOT_BTC, RELAY_ROOT,
-                        MAX_TRAIN_MINUTES, MAX_UPDATES, MINUTE_NS, POLICY_INPUT_SIZE,
+from .contracts import (ACTION_TARGETS_LOTS, LOT_BTC, RELAY_ROOT,
+                        MAX_TRAIN_MINUTES, MAX_UPDATES, MINUTE_NS,
                         canonical, read_role_plan, read_verified_features, reject_system_temp,
                         sha256_file)
+from .factors import selected_factor_values, suites, registry_sha256
 
 
 def jsonl(path: Path) -> Iterator[dict[str, Any]]:
@@ -34,8 +35,17 @@ def jsonl(path: Path) -> Iterator[dict[str, Any]]:
 
 
 def fit_normalizer(path: Path, start: int, end: int) -> tuple[list[float], list[float], int]:
-    means = np.zeros(len(FEATURE_NAMES), dtype=np.float64)
-    m2 = np.zeros(len(FEATURE_NAMES), dtype=np.float64)
+    _, means, scales, count = fit_factor_normalizer(path, start, end, "raw_baseline_v1")
+    return means, scales, count
+
+
+def fit_factor_normalizer(path: Path, start: int, end: int,
+                          factor_set_id: str) -> tuple[list[str], list[float], list[float], int]:
+    factor_names = suites().get(factor_set_id)
+    if factor_names is None:
+        raise ValueError(f"unknown factor set: {factor_set_id}")
+    means = np.zeros(len(factor_names), dtype=np.float64)
+    m2 = np.zeros(len(factor_names), dtype=np.float64)
     count = 0
     for row in jsonl(path):
         timestamp = row["decision_at_ns"]
@@ -43,7 +53,8 @@ def fit_normalizer(path: Path, start: int, end: int) -> tuple[list[float], list[
             continue
         if not row["feature_ready"]:
             continue
-        vector = np.array([row["features"][name] for name in FEATURE_NAMES], dtype=np.float64)
+        _, factor_values = selected_factor_values(row["features"], factor_set_id)
+        vector = np.array(factor_values, dtype=np.float64)
         count += 1
         delta = vector - means
         means += delta / count
@@ -52,7 +63,7 @@ def fit_normalizer(path: Path, start: int, end: int) -> tuple[list[float], list[
         raise ValueError("Train window needs at least two complete feature rows to fit normalization")
     scale = np.sqrt(m2 / count)
     scale[scale < 1e-12] = 1.0
-    return means.tolist(), scale.tolist(), count
+    return factor_names, means.tolist(), scale.tolist(), count
 
 
 def rows_in_window(feature_path: Path, ledger_path: Path, start: int, end: int) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
@@ -139,9 +150,9 @@ def apply_fill(position_lots: int, target_lots: int, ledger: dict[str, Any], fee
 
 
 def simulate_episode(feature_path: Path, ledger_path: Path, window: dict[str, int],
-                     means: list[float], scales: list[float], actor: torch.nn.Linear,
-                     device: torch.device, fee_bps: float, slippage_bps: float,
-                     rng: torch.Generator, memory_limit_mb: int) -> tuple[list[tuple[list[float], int, float]], dict[str, Any]]:
+                     select_action: Any, fee_bps: float, slippage_bps: float,
+                     memory_limit_mb: int, collect_experiences: bool = False
+                     ) -> tuple[list[tuple[list[float], int, float]], dict[str, Any]]:
     start, end = window["start_ns"], window["end_ns"]
     position = 0
     previous_mark: float | None = None
@@ -149,12 +160,14 @@ def simulate_episode(feature_path: Path, ledger_path: Path, window: dict[str, in
     max_equity = equity
     min_drawdown = 0.0
     pending_cost = 0.0
-    pending_rewards: list[float] = []
+    pending_reward = 0.0
     experiences: list[tuple[list[float], int, float]] = []
     current_state: list[float] | None = None
     current_action = 1
     decisions = fills = 0
     total_fees = total_slippage = funding_pnl = gross_pnl = 0.0
+    traded_btc = traded_notional = 0.0
+    ready_minutes = valid_mark_minutes = exposure_minutes = 0
     minute_count = 0
     for feature, ledger in rows_in_window(feature_path, ledger_path, start, end):
         minute_count += 1
@@ -163,40 +176,45 @@ def simulate_episode(feature_path: Path, ledger_path: Path, window: dict[str, in
             if rss_mb > memory_limit_mb:
                 raise ValueError(f"process RSS exceeded configured {memory_limit_mb} MiB limit")
         price = feature.get("mark_price")
+        if price is not None:
+            valid_mark_minutes += 1
+        if feature["feature_ready"]:
+            ready_minutes += 1
+        if position:
+            exposure_minutes += 1
         if price is not None and previous_mark is not None and position:
             pnl = position * LOT_BTC * (price - previous_mark)
             equity += pnl
-            pending_rewards.append(pnl)
+            pending_reward += pnl
             gross_pnl += pnl
         previous_mark = price
         for settlement in ledger["funding_settlements"]:
             cashflow = -position * LOT_BTC * settlement["mark_price"] * settlement["funding_rate"]
             equity += cashflow
-            pending_rewards.append(cashflow)
+            pending_reward += cashflow
             funding_pnl += cashflow
         max_equity = max(max_equity, equity)
         if max_equity > 0:
             min_drawdown = min(min_drawdown, (equity - max_equity) / max_equity)
         if not feature["decision_due"]:
             continue
-        if current_state is not None:
-            reward = sum(pending_rewards) - pending_cost
+        if collect_experiences and current_state is not None:
+            reward = pending_reward - pending_cost
             experiences.append((current_state, current_action, reward / 10_000.0))
-            pending_rewards.clear()
-            pending_cost = 0.0
+        pending_reward = 0.0
+        pending_cost = 0.0
         if not feature["feature_ready"]:
             current_state = None
             continue
-        base = [(float(feature["features"][name]) - means[index]) / scales[index]
-                for index, name in enumerate(FEATURE_NAMES)]
-        state = base + [position]
-        state_tensor = torch.tensor(state, dtype=torch.float32, device=device)
-        probabilities = torch.softmax(actor(state_tensor), dim=0)
-        action = int(torch.multinomial(probabilities, 1, generator=rng).item())
+        action, state = select_action(feature, position)
+        if not isinstance(action, int) or isinstance(action, bool) or action not in (0, 1, 2):
+            raise ValueError("policy returned an invalid categorical action")
         target_lots = ACTION_TARGETS_LOTS[action]
         position, cost, _, filled = apply_fill(position, target_lots, ledger, fee_bps, slippage_bps)
         if filled:
             fills += 1
+            traded_btc += abs(filled) * LOT_BTC
+            traded_notional += abs(filled) * LOT_BTC * ledger["execution_vwap"]
             fees = abs(filled * LOT_BTC * (ledger["execution_vwap"] or 0)) * fee_bps / 10_000
             slippage = cost - fees
             equity -= cost
@@ -215,17 +233,20 @@ def simulate_episode(feature_path: Path, ledger_path: Path, window: dict[str, in
             min_drawdown = min(min_drawdown, (equity - max_equity) / max_equity)
         current_state, current_action = state, action
         decisions += 1
-    if current_state is not None:
+    if collect_experiences and current_state is not None:
         experiences.append((current_state, current_action,
-                            (sum(pending_rewards) - pending_cost) / 10_000.0))
+                            (pending_reward - pending_cost) / 10_000.0))
     stats = {"minutes": minute_count, "decisions": decisions, "fills": fills,
              "gross_price_pnl_usdt": gross_pnl, "funding_pnl_usdt": funding_pnl,
              "fees_usdt": total_fees, "slippage_usdt": total_slippage,
              "ending_equity_usdt": equity, "max_drawdown_fraction": min_drawdown,
+             "net_pnl_usdt": equity - 10_000.0,
+             "net_return_fraction": (equity - 10_000.0) / 10_000.0,
              "ending_position_lots": position, "closed_at_end": position == 0,
+             "traded_btc": traded_btc, "traded_notional_usdt": traded_notional,
+             "exposure_minutes": exposure_minutes, "mark_coverage_fraction": valid_mark_minutes / minute_count if minute_count else 0.0,
+             "feature_ready_fraction": ready_minutes / minute_count if minute_count else 0.0,
              "mean_policy_reward_fraction": float(np.mean([item[2] for item in experiences])) if experiences else 0.0}
-    if decisions == 0:
-        raise ValueError("Train window contains no ready policy decision rows")
     return experiences, stats
 
 
@@ -258,12 +279,12 @@ def train(args: Any) -> dict[str, Any]:
     train_minutes = (train_window["end_ns"] - train_window["start_ns"]) // MINUTE_NS
     if train_minutes > MAX_TRAIN_MINUTES:
         raise ValueError("Train role exceeds the one-year hard cap")
-    means, scales, normalizer_rows = fit_normalizer(feature_path / "features.jsonl",
-                                                    train_window["start_ns"], train_window["end_ns"])
+    factor_names, means, scales, normalizer_rows = fit_factor_normalizer(
+        feature_path / "features.jsonl", train_window["start_ns"], train_window["end_ns"], args.factor_set)
     device, fallback = select_device(args.device, args.max_gpu_memory_mb)
     set_seed(args.seed)
     rng = torch.Generator(device=device).manual_seed(args.seed)
-    actor = torch.nn.Linear(POLICY_INPUT_SIZE, len(ACTION_TARGETS_LOTS), bias=True, device=device)
+    actor = torch.nn.Linear(len(factor_names) + 1, len(ACTION_TARGETS_LOTS), bias=True, device=device)
     torch.nn.init.zeros_(actor.weight)
     torch.nn.init.zeros_(actor.bias)
     optimizer = torch.optim.SGD(actor.parameters(), lr=0.1)
@@ -279,10 +300,21 @@ def train(args: Any) -> dict[str, Any]:
         with trace_path.open("xb") as raw_trace:
             with zstandard.ZstdCompressor(level=3).stream_writer(raw_trace, closefd=False) as compressed:
                 for update in range(args.updates):
+                    def select_action(feature: dict[str, Any], position: int) -> tuple[int, list[float]]:
+                        _, values = selected_factor_values(feature["features"], args.factor_set)
+                        base = [(value - means[index]) / scales[index]
+                                for index, value in enumerate(values)]
+                        state = base + [position]
+                        tensor = torch.tensor(state, dtype=torch.float32, device=device)
+                        probabilities = torch.softmax(actor(tensor), dim=0)
+                        return int(torch.multinomial(probabilities, 1, generator=rng).item()), state
+
                     experiences, stats = simulate_episode(
                         feature_path / "features.jsonl", feature_path / "ledger_inputs.jsonl",
-                        train_window, means, scales,
-                        actor, device, args.fee_bps, args.slippage_bps, rng, args.max_memory_mb)
+                        train_window, select_action, args.fee_bps, args.slippage_bps,
+                        args.max_memory_mb, collect_experiences=True)
+                    if not experiences:
+                        raise ValueError("Train window contains no ready policy decisions")
                     states = torch.tensor([item[0] for item in experiences], dtype=torch.float32, device=device)
                     actions = torch.tensor([item[1] for item in experiences], dtype=torch.int64, device=device)
                     rewards = torch.tensor([item[2] for item in experiences], dtype=torch.float32, device=device)
@@ -315,7 +347,9 @@ def train(args: Any) -> dict[str, Any]:
                 for chunk in iter(lambda: source_stream.read(1024 * 1024), b""):
                     code_digest.update(chunk)
         model = {"schema": "td_market_data_usdm_rl_linear_policy", "version": 1,
-                 "feature_names": list(FEATURE_NAMES), "position_state": "current_position_lots in [-1,0,1]",
+                 "feature_names": factor_names, "factor_set_id": args.factor_set,
+                 "factor_set_sha256": registry_sha256(),
+                 "position_state": "current_position_lots in [-1,0,1]",
                  "action_target_lots": list(ACTION_TARGETS_LOTS), "weights": actor.weight.detach().cpu().tolist(),
                  "bias": actor.bias.detach().cpu().tolist(), "normalizer": {"fit_role": "train",
                  "rows": normalizer_rows, "mean": means, "scale": scales}}
@@ -329,6 +363,7 @@ def train(args: Any) -> dict[str, Any]:
                "feature_protocol_sha256": feature_manifest["protocol_sha256"],
                "trainer_code_sha256": code_digest.hexdigest(),
                "role": "train", "train_window": train_window,
+               "factor_set_id": args.factor_set, "factor_set_sha256": registry_sha256(),
                "algorithm": {"name": "linear_categorical_reinforce", "gamma": 0.99,
                              "baseline": "scalar exponential moving average alpha=0.1",
                              "optimizer": "SGD", "learning_rate": 0.1,
