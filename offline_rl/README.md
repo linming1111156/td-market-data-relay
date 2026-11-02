@@ -123,6 +123,47 @@ coverage for every held-out role, seed, and strategy. `verify-evaluation`
 recomputes the report and compares its hash, so repeatability is checked against
 the original fixed inputs and pinned runtime.
 
+For Vision factor screening, `validation-sweep` trains each factor suite on
+Train and creates seed-specific candidate artifacts. Then
+`validation-seed-matrix` evaluates every trained candidate with every fixed
+Validation action seed. This separates training-seed variation from stochastic
+action-sampling variation. It reuses the candidate artifacts and does not read
+Test/OOS. Both artifacts have independent verifiers that recompute held-out
+results.
+
+```sh
+uv run td-market-data-rl validation-seed-matrix \
+  --source-sweep /data/research/vision-validation-sweep-v1 \
+  --historical-inputs /data/research/vision-inputs-v1 \
+  --role-plan /data/research/vision-role-plan-v1.json \
+  --output /data/research/vision-validation-seed-matrix-v1
+
+uv run td-market-data-rl verify-validation-seed-matrix \
+  --artifact /data/research/vision-validation-seed-matrix-v1 \
+  --historical-inputs /data/research/vision-inputs-v1 \
+  --role-plan /data/research/vision-role-plan-v1.json
+```
+
+For Vision factor screening, `validation-sweep` trains each factor suite on
+Train and creates seed-specific candidate artifacts. Then the standalone
+`offline_rl/scripts/validation_seed_matrix.py` evaluates every trained model
+with every fixed Validation action-sampling seed. This separates training-seed
+variation from stochastic action-sampling variation. It reuses the candidate
+artifacts and does not read Test/OOS. Its verifier recomputes every result.
+
+```sh
+uv run --project offline_rl python offline_rl/scripts/validation_seed_matrix.py create \
+  --source-sweep /data/research/vision-validation-sweep-v1 \
+  --historical-inputs /data/research/vision-inputs-v1 \
+  --role-plan /data/research/vision-role-plan-v1.json \
+  --output /data/research/vision-validation-seed-matrix-v1
+
+uv run --project offline_rl python offline_rl/scripts/validation_seed_matrix.py verify \
+  --artifact /data/research/vision-validation-seed-matrix-v1 \
+  --historical-inputs /data/research/vision-inputs-v1 \
+  --role-plan /data/research/vision-role-plan-v1.json
+```
+
 ## Current limits
 
 - Up to 525,600 Train minutes, 20 policy updates, 8 GiB process RSS, and an
