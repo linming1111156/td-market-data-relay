@@ -163,6 +163,33 @@ the actionability and cost model is unlikely to solve the observed gap.
    to add independent data (for example depth/imbalance) or a more expressive
    policy model. Do not treat another transformed feature as new information.
 
+## One-time frozen Test result
+
+After the masked Validation comparison, the candidate was frozen before
+reading Test: `raw_baseline_v1`, `mlp_tanh8`, learning rate 30, 20 updates,
+10 bps fees, 5 bps slippage, and training seed 101. Seed 101 was the median
+Validation-performing MLP seed, not the best one. The policy was evaluated
+once over Test using action-sampling seeds 101, 202, and 303, alongside the
+same NOOP, buy-and-hold, and momentum baselines. The report verifier
+recomputed and matched the held-out results. OOS was not read.
+
+On the main Test window (`test-01`, 128,160 minutes), the frozen policy's mean
+return across the three action seeds was **−5.322%**, with worst drawdown
+−5.396%, about 4,929 fills, `$355,125` traded notional, `$355.12` fees, and
+`$177.56` modeled slippage per seed on average. Mark and feature-ready
+coverage were both 100%. NOOP returned 0%; buy-and-hold returned −0.090%.
+The short second fragment (`test-02`, 1,379 minutes) returned −0.057% for the
+policy and is not a meaningful performance sample by itself. The frozen
+candidate fails the held-out comparison and is **not a trading candidate**.
+Do not tune from this Test result; OOS remains reserved.
+
+The create-only freeze record and verified evaluation artifact are under
+`/mnt/data/td-market-data-local/research-inputs/vision-historical-frozen-candidate-test-20261102-v1`:
+
+- Candidate freeze SHA-256: `94bd0c66be5f403bb1d1572daae3c9b467c33d462087fb526b8da8bd440a9275`
+- Test report SHA-256: `4bd516c5a28db3d659f94a69233a2d31e87637b0241a77108341b29cc2d0bc1b`
+- Test artifact manifest SHA-256: `0d98b44ec75059e20bb15d5b8e51cce21232f1751ee423226110bdcefb18ebe4`
+
 ## Evidence references
 
 All reports below are on `/mnt/data/td-market-data-local/research-inputs` and

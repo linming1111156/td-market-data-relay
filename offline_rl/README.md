@@ -128,8 +128,12 @@ offline_rl/.venv/bin/td-market-data-rl validation-sweep \
 
 Verify each artifact with `td-market-data-rl verify-validation-sweep`, using the
 same historical inputs and role plan. Validation is for model selection only;
-Test/OOS remains reserved until the architecture and training settings are
-frozen.
+Test/OOS must remain reserved until the architecture and training settings are
+frozen. The masked raw MLP was frozen and evaluated once on Test; it lost to
+NOOP and buy-and-hold, so it is not a trading candidate. The Test artifact and
+freeze record are documented in
+[`docs/first-principles-strategy-audit-20261102.md`](docs/first-principles-strategy-audit-20261102.md).
+OOS remains untouched.
 
 ## Inspect Train-only factor signal strength
 
