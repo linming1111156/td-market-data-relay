@@ -107,6 +107,33 @@ PYTHONPATH=offline_rl/src offline_rl/.venv/bin/python \
   --output /mnt/data/research/train-signal-diagnostics-v1.json
 ```
 
+The first-principles review of the current accounting, signal, and policy
+assumptions is recorded in
+[`docs/first-principles-strategy-audit-20261102.md`](docs/first-principles-strategy-audit-20261102.md).
+
+To compare deterministic Validation inference with conservative flat-action
+priors on the existing frozen factor-sweep models:
+
+```sh
+PYTHONPATH=offline_rl/src offline_rl/.venv/bin/python \
+  offline_rl/scripts/conservative_policy_validation.py create \
+  --source-sweep /mnt/data/research/vision-historical-rust-validation-factor-sweep-v1 \
+  --historical-inputs /mnt/data/research/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/research/vision-historical-role-plan-v4.json \
+  --output /mnt/data/research/conservative-validation-v1
+```
+
+The verifier recomputes all Validation replays:
+
+```sh
+PYTHONPATH=offline_rl/src offline_rl/.venv/bin/python \
+  offline_rl/scripts/conservative_policy_validation.py verify \
+  --artifact /mnt/data/research/conservative-validation-v1 \
+  --source-sweep /mnt/data/research/vision-historical-rust-validation-factor-sweep-v1 \
+  --historical-inputs /mnt/data/research/vision-historical-rl-inputs-v3 \
+  --role-plan /mnt/data/research/vision-historical-role-plan-v4.json
+```
+
 ## Compare with frozen baselines
 
 Evaluation reads only the role plan's Validation/Test/OOS windows. It never
