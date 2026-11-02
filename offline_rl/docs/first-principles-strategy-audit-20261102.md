@@ -33,6 +33,14 @@ Measured on the frozen v4 role plan:
 - Validation prices range from `$60,020.58` to `$97,829.88`; all 8,640 ready
   Validation decisions pass those same entry checks.
 
+Per-window eligibility is also uneven: `train-01` has 10,609 / 23,061
+eligible decisions (46.00%), `train-02` has 4,637 / 11,973 (38.73%), and
+`validation-01` has 8,640 / 8,640 (100%). The policy state does not include
+mark price or an explicit order-feasibility flag, and nonflat actions are not
+masked when the execution rules cannot open a position. An infeasible action
+can therefore be sampled and recorded as a policy decision without changing
+the account.
+
 This may be an intentional risk limit, but it changes the action space by
 market price and creates a Train/Validation mismatch. It must be modeled as an
 explicit exchange/risk constraint. If the intended order size is dynamic, the
@@ -53,6 +61,16 @@ This is a boundary-accounting mismatch. Either each episode must close at an
 executable final price and include its costs, or the contract must explicitly
 carry the position into the next episode. The current independent-episode
 design does neither.
+
+The data can support a clean terminal close without reading outside the role
+window: each last feature row's post-decision execution minute ends exactly at
+the frozen window end. Its aggregate-trade volumes are 466.987 BTC for
+`train-01`, 5.981 BTC for `train-02`, and 54.226 BTC for `validation-01`, each
+well above the 0.001 BTC lot under the 1% participation cap. A one-lot exit at
+those terminal VWAPs would cost about `$0.17`, `$0.13`, and `$0.10`
+respectively under the current 10+5 bps scenario. The boundary omission is a
+correctness issue, though its direct cost is small relative to the observed
+strategy losses.
 
 ### 3. The measured factor signal is small relative to the modeled cost hurdle
 
