@@ -17,7 +17,7 @@ offline_rl/.venv/bin/python prepare_vision_historical_rl_inputs.py \
   --minute-dataset /mnt/data/td-market-data-local/research-inputs/vision-minute-engine-v1 \
   --features /mnt/data/td-market-data-local/research-inputs/vision-rl-features-rust-v4 \
   --raw-root /mnt/data/td-gateway-datasets/rl-preproduction-v1/raw \
-  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v1
+  --output /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v4
 
 offline_rl/.venv/bin/python verify_vision_historical_rl_inputs.py \
   --artifact /mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v1
@@ -32,7 +32,9 @@ file hashes. Publication is atomic and create-only.
 
 ## Current fixed artifact
 
-The audited output contains 917,134 reliable minute rows:
+The locally verified artifact is
+`/mnt/data/td-market-data-local/research-inputs/vision-historical-rl-inputs-v3`.
+It contains 917,134 reliable minute rows:
 
 | Role | Windows | Minutes |
 | --- | ---: | ---: |
