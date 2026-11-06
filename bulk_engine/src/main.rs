@@ -8,6 +8,7 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
+mod archive_verify;
 mod replay_cache;
 mod training_replay;
 
@@ -1173,7 +1174,11 @@ fn run() -> Result<(), String> {
         Some("derive-features") => run_features(args),
         Some("training-replay") => training_replay::run(args),
         Some("training-prepare") => replay_cache::run(args),
-        _ => Err("usage: engine process|derive-features|training-replay [OPTIONS]".into()),
+        Some("verify-archives") => archive_verify::run(args),
+        _ => Err(
+            "usage: engine process|derive-features|training-replay|training-prepare|verify-archives [OPTIONS]"
+                .into(),
+        ),
     }
 }
 
