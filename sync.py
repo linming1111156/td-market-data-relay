@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Restore retained VPS captures into a local append-only archive."""
+"""Restore retained VPS captures into local storage with checksum verification."""
 
 from __future__ import annotations
 
 import argparse
+import calendar
 import fcntl
 import hashlib
 import json
@@ -14,6 +15,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 from collector import SUPPORTED_STREAMS as COLLECTOR_SUPPORTED_STREAMS
@@ -67,6 +69,183 @@ def capture_is_closed(path: Path) -> bool:
     return isinstance(last_record, dict) and last_record.get("record_type") == "capture_stopped"
 
 
+def validate_capture_reader(reader, expected_sha256: str) -> int:
+    """Hash and validate a capture as a bounded stream without writing decoded bytes."""
+    digest_value = hashlib.sha256()
+    total = 0
+    line_number = 0
+    last_record = None
+    pending = bytearray()
+    while True:
+        block = reader.read(64 * 1024)
+        if not block:
+            break
+        digest_value.update(block)
+        total += len(block)
+        if total > 256 * 1024 * 1024:
+            raise RuntimeError("decompressed capture exceeds the 256 MiB cap")
+        pending.extend(block)
+        while True:
+            newline = pending.find(b"\n")
+            if newline < 0:
+                if len(pending) > MAX_CAPTURE_LINE_BYTES:
+                    raise RuntimeError(f"capture line {line_number + 1} exceeds size bound")
+                break
+            line_number += 1
+            if newline + 1 > MAX_CAPTURE_LINE_BYTES:
+                raise RuntimeError(f"capture line {line_number} exceeds size bound")
+            raw = bytes(pending[:newline + 1])
+            del pending[:newline + 1]
+            try:
+                record = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise RuntimeError(f"capture line {line_number} is invalid JSON") from error
+            if not isinstance(record, dict):
+                raise RuntimeError(f"capture line {line_number} is not an object")
+            last_record = record
+    if pending:
+        raise RuntimeError(f"capture line {line_number + 1} is truncated")
+    if digest_value.hexdigest() != expected_sha256:
+        raise RuntimeError("decompressed capture hash mismatch")
+    if not isinstance(last_record, dict) or last_record.get("record_type") != "capture_stopped":
+        raise RuntimeError("remote capture is not closed")
+    return total
+
+
+def capture_time_from_name(filename: str) -> int:
+    match = re.fullmatch(r"[A-Z0-9]{1,32}-(\d{8}T\d{6}Z)-[0-9a-f]{32}\.jsonl(?:\.zst)?", filename)
+    if match is None:
+        raise RuntimeError("capture filename has no valid UTC timestamp")
+    parsed = datetime.strptime(match.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    return calendar.timegm(parsed.utctimetuple())
+
+
+def archive_metadata(target: Path, entry: dict, raw_size: int, relay_host: str,
+                     recovered_at_ns: int, filename: str | None = None) -> dict:
+    return {
+        "schema": "td_market_data_archive_metadata_v1",
+        "capture_id": str(entry["id"]),
+        "raw_sha256": str(entry["raw_sha256"]),
+        "raw_size_bytes": raw_size,
+        "compressed_sha256": digest(target),
+        "compressed_size_bytes": target.stat().st_size,
+        "captured_at_unix_seconds": capture_time_from_name(filename or target.name),
+        "recovery_provenance": {
+            "schema": RECOVERY_SCHEMA,
+            "version": 1,
+            "capture_id": str(entry["id"]),
+            "origin": "vps_recovered",
+            "recovered_at_unix_ns": recovered_at_ns,
+            "raw_sha256": str(entry["raw_sha256"]),
+            "relay_host": relay_host,
+        },
+    }
+
+
+def write_archive_metadata(target: Path, metadata: dict) -> None:
+    metadata_path = target.with_name(target.name + ".meta.json")
+    temporary = metadata_path.with_name(metadata_path.name + f".tmp-{os.getpid()}")
+    remove_abandoned_temp(temporary)
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        publish_without_overwrite(temporary, metadata_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def compress_capture(source: Path, destination: Path) -> tuple[str, int]:
+    """Compress a validated raw capture without materializing another raw copy."""
+    import zstandard
+
+    raw_hash = hashlib.sha256()
+    raw_size = 0
+    with source.open("rb") as src, destination.open("xb") as output:
+        with zstandard.ZstdCompressor(level=3, write_checksum=True).stream_writer(
+                output, closefd=False) as writer:
+            while block := src.read(1024 * 1024):
+                raw_hash.update(block)
+                raw_size += len(block)
+                writer.write(block)
+        output.flush()
+        os.fsync(output.fileno())
+    return raw_hash.hexdigest(), raw_size
+
+
+def verify_compressed_capture(path: Path, entry: dict) -> int:
+    import zstandard
+
+    try:
+        with path.open("rb") as source:
+            with zstandard.ZstdDecompressor().stream_reader(source) as reader:
+                return validate_capture_reader(reader, str(entry["raw_sha256"]))
+    except zstandard.ZstdError as error:
+        raise RuntimeError(f"invalid zstd archive for capture {entry['id']}") from error
+
+
+def restore_to_archive(base: str, key: str, entry: dict, target: Path, relay_host: str) -> bool:
+    """Restore one verified remote capture directly into the local zstd archive."""
+    metadata_path = target.with_name(target.name + ".meta.json")
+    if target.exists() or target.is_symlink():
+        if metadata_path.exists() or metadata_path.is_symlink():
+            if archived_capture_matches(target, entry):
+                return False
+            raise RuntimeError(f"local archive metadata differs; left untouched: {metadata_path}")
+        if target.is_symlink() or not target.is_file():
+            raise RuntimeError(f"local archive is unsafe; left untouched: {target}")
+        # Recover safely from a crash after publishing the archive but before metadata.
+        raw_size = verify_compressed_capture(target, entry)
+        metadata = archive_metadata(target, entry, raw_size, relay_host, time.time_ns())
+        write_archive_metadata(target, metadata)
+        return False
+    if metadata_path.exists() or metadata_path.is_symlink():
+        raise RuntimeError(f"orphaned local archive metadata; left untouched: {metadata_path}")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    download = target.with_name(target.name + f".download-{os.getpid()}")
+    compressed = target.with_name(target.name + f".tmp-{os.getpid()}")
+    remove_abandoned_temp(download)
+    remove_abandoned_temp(compressed)
+    route = "/v1/captures/" + urllib.parse.quote(str(entry["id"]), safe="")
+    compressed_hash = hashlib.sha256()
+    try:
+        with request(base + route, key, timeout=180) as response, download.open("xb") as output:
+            declared_length = int(response.headers.get("Content-Length", "0"))
+            if declared_length != entry["size_bytes"]:
+                raise RuntimeError(f"relay size changed for capture {entry['id']}")
+            while block := response.read(1024 * 1024):
+                compressed_hash.update(block)
+                output.write(block)
+            output.flush()
+            os.fsync(output.fileno())
+        if compressed_hash.hexdigest() != entry["sha256"]:
+            raise RuntimeError(f"download hash mismatch for capture {entry['id']}")
+
+        if entry["compressed"]:
+            raw_size = verify_compressed_capture(download, entry)
+            os.replace(download, compressed)
+        else:
+            with download.open("rb") as source:
+                raw_size = validate_capture_reader(source, str(entry["raw_sha256"]))
+            raw_hash, compressed_raw_size = compress_capture(download, compressed)
+            if raw_hash != entry["raw_sha256"] or compressed_raw_size != raw_size:
+                raise RuntimeError(f"capture changed while archiving {entry['id']}")
+
+        os.utime(compressed, (capture_time_from_name(target.name),) * 2)
+        metadata = archive_metadata(compressed, entry, raw_size, relay_host, time.time_ns(),
+                                    filename=target.name)
+        publish_without_overwrite(compressed, target)
+        write_archive_metadata(target, metadata)
+        if not archived_capture_matches(target, entry):
+            raise RuntimeError(f"local archive verification failed after publish: {target}")
+        return True
+    finally:
+        download.unlink(missing_ok=True)
+        compressed.unlink(missing_ok=True)
+
+
 def archived_capture_matches(path: Path, entry: dict) -> bool:
     """Check whether the local relay archive already holds this raw capture."""
     metadata_path = path.with_name(path.name + ".meta.json")
@@ -87,6 +266,7 @@ def archived_capture_matches(path: Path, entry: dict) -> bool:
             or metadata.get("capture_id") != expected_id
             or metadata.get("compressed_size_bytes") != path.stat().st_size
             or re.fullmatch(r"[0-9a-f]{64}", str(metadata.get("compressed_sha256", ""))) is None
+            or metadata.get("compressed_sha256") != digest(path)
             or metadata.get("raw_sha256") != entry["raw_sha256"]):
         raise RuntimeError(f"local archive differs from relay copy; left untouched: {path}")
     return True
@@ -242,7 +422,9 @@ def main() -> None:
                         help="Cloudflare Tunnel URL for the relay (or TD_RELAY_BASE_URL)")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--archive-root", type=Path,
-                        help="local relay archive root used to avoid re-downloading archived captures")
+                        help="local relay archive used to skip existing captures or receive direct archives")
+    parser.add_argument("--direct-archive", action="store_true",
+                        help="verify remote captures and store them as local zstd archives without hot JSONL files")
     parser.add_argument("--since-ns", type=int, default=0, help="Only captures modified since this Unix nanosecond time")
     parser.add_argument("--stream", default="", help="Optional stream filter")
     parser.add_argument("--symbol", default="", help="Optional symbol filter")
@@ -266,6 +448,8 @@ def main() -> None:
         raise SystemExit("continuous mode requires --state-file and --poll-seconds >= 30")
     if args.archive_root is not None and (args.archive_root.is_symlink() or not args.archive_root.is_dir()):
         raise SystemExit("--archive-root must be an existing local relay archive directory")
+    if args.direct_archive and args.archive_root is None:
+        raise SystemExit("--direct-archive requires --archive-root")
     args.output.mkdir(parents=True, exist_ok=True)
 
     def restore_since(since_ns: int) -> None:
@@ -306,6 +490,15 @@ def main() -> None:
             if bool(entry["compressed"]) != filename.endswith(".zst"):
                 raise RuntimeError("relay compression flag disagrees with capture path")
             raw_filename = filename.removesuffix(".zst")
+            if args.direct_archive:
+                archive_target = (args.archive_root / stream_name / symbol
+                                  / f"{raw_filename}.zst")
+                if restore_to_archive(base, key, entry, archive_target, relay_host):
+                    restored += 1
+                    print(f"archived {stream_name}/{symbol}/{archive_target.name}", flush=True)
+                else:
+                    skipped += 1
+                continue
             target = args.output / stream_name / symbol / raw_filename
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():

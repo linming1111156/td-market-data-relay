@@ -40,6 +40,12 @@ class RelayHandler(BaseHTTPRequestHandler):
 
 
 class SyncTests(unittest.TestCase):
+    @staticmethod
+    def decompress_archive(path: Path) -> bytes:
+        with path.open("rb") as source:
+            with zstandard.ZstdDecompressor().stream_reader(source) as reader:
+                return reader.read()
+
     def test_sync_persists_loss_inventory_from_relay_index(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -105,7 +111,8 @@ class SyncTests(unittest.TestCase):
                     self.assertEqual(len(list((output / stream / "BTCUSDT").glob("*.jsonl"))), 1)
 
     def run_sync(self, directory: Path, entry: dict, payload: bytes, exit_expected=0,
-                 losses: list[dict] | None = None, archive_root: Path | None = None):
+                 losses: list[dict] | None = None, archive_root: Path | None = None,
+                 direct_archive: bool = False):
         RelayHandler.index_body = json.dumps({
             "schema": "td_market_data_relay_index_v1", "captures": [entry], "losses": losses or [],
         }).encode()
@@ -119,6 +126,8 @@ class SyncTests(unittest.TestCase):
                 "--output", str(output)]
         if archive_root is not None:
             args.extend(["--archive-root", str(archive_root)])
+        if direct_archive:
+            args.append("--direct-archive")
         try:
             with patch.dict(os.environ, env), patch.object(sys, "argv", args), redirect_stdout(StringIO()):
                 if exit_expected == 0:
@@ -182,6 +191,77 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), payload)
             self.run_sync(directory, self.entry_for(payload), payload)
             self.assertEqual(target.read_bytes(), payload)
+
+    def test_direct_archive_compresses_raw_capture_without_publishing_hot_jsonl(self):
+        payload = b'{"record_type":"capture_started"}\n{"record_type":"capture_stopped"}\n'
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            archive_root = directory / "archive"
+            archive_root.mkdir()
+            entry = self.entry_for(payload)
+            output = self.run_sync(directory, entry, payload, archive_root=archive_root,
+                                   direct_archive=True)
+            archive = archive_root / "spot-depth/BTCUSDT/BTCUSDT-20261031T120000Z-0123456789abcdef0123456789abcdef.jsonl.zst"
+            metadata = json.loads(archive.with_name(archive.name + ".meta.json").read_text())
+            self.assertEqual(self.decompress_archive(archive), payload)
+            self.assertEqual(metadata["raw_sha256"], entry["raw_sha256"])
+            self.assertEqual(metadata["recovery_provenance"]["origin"], "vps_recovered")
+            self.assertFalse([path for path in output.rglob("*.jsonl")
+                              if path.name != ".relay-losses.jsonl"])
+            self.run_sync(directory, entry, b"should not be downloaded", archive_root=archive_root,
+                          direct_archive=True)
+            self.assertEqual(self.decompress_archive(archive), payload)
+
+    def test_direct_archive_preserves_valid_remote_zstd_bytes(self):
+        payload = b'{"record_type":"capture_stopped"}\n'
+        remote_compressed = zstandard.ZstdCompressor(level=5).compress(payload)
+        entry = self.entry_for(payload)
+        entry["path"] += ".zst"
+        entry["compressed"] = True
+        entry["size_bytes"] = len(remote_compressed)
+        entry["sha256"] = hashlib.sha256(remote_compressed).hexdigest()
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            archive_root = directory / "archive"
+            archive_root.mkdir()
+            self.run_sync(directory, entry, remote_compressed, archive_root=archive_root,
+                          direct_archive=True)
+            archive = archive_root / "spot-depth/BTCUSDT/BTCUSDT-20261031T120000Z-0123456789abcdef0123456789abcdef.jsonl.zst"
+            self.assertEqual(archive.read_bytes(), remote_compressed)
+            self.assertEqual(self.decompress_archive(archive), payload)
+
+    def test_direct_archive_rejects_compressed_capture_with_wrong_raw_hash(self):
+        payload = b'{"record_type":"capture_stopped"}\n'
+        remote_compressed = zstandard.ZstdCompressor().compress(payload)
+        entry = self.entry_for(payload)
+        entry["path"] += ".zst"
+        entry["compressed"] = True
+        entry["size_bytes"] = len(remote_compressed)
+        entry["sha256"] = hashlib.sha256(remote_compressed).hexdigest()
+        entry["raw_sha256"] = "0" * 64
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            archive_root = directory / "archive"
+            archive_root.mkdir()
+            self.run_sync(directory, entry, remote_compressed, exit_expected=1,
+                          archive_root=archive_root, direct_archive=True)
+            self.assertFalse(list(archive_root.rglob("*.jsonl.zst")))
+
+    def test_direct_archive_repairs_archive_published_before_metadata(self):
+        payload = b'{"record_type":"capture_stopped"}\n'
+        entry = self.entry_for(payload)
+        remote_compressed = zstandard.ZstdCompressor().compress(payload)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            archive_root = directory / "archive"
+            archive = archive_root / "spot-depth/BTCUSDT/BTCUSDT-20261031T120000Z-0123456789abcdef0123456789abcdef.jsonl.zst"
+            archive.parent.mkdir(parents=True)
+            archive.write_bytes(remote_compressed)
+            self.run_sync(directory, entry, b"should not be downloaded", archive_root=archive_root,
+                          direct_archive=True)
+            metadata = json.loads(archive.with_name(archive.name + ".meta.json").read_text())
+            self.assertEqual(metadata["raw_sha256"], entry["raw_sha256"])
+            self.assertEqual(self.decompress_archive(archive), payload)
 
     def test_rejects_path_traversal_without_creating_outside_file(self):
         payload = b"unsafe"

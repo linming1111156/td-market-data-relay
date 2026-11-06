@@ -15,7 +15,7 @@ PYTHON_BIN=${PYTHON_BIN:-python3.13}
 UV_BIN=${UV_BIN:-uv}
 
 for required in collector.py sync.py requirements.txt deploy/td-market-data-sync.service \
-  deploy/td-market-data-sync-local-hot.conf; do
+  deploy/td-market-data-sync-local-hot.conf deploy/td-market-data-sync-local-archive.conf; do
   if [[ ! -f "$SOURCE_ROOT/$required" ]]; then
     echo "required source file is missing: $SOURCE_ROOT/$required" >&2
     exit 1
@@ -139,18 +139,20 @@ install -m 0644 "$SOURCE_ROOT/deploy/td-market-data-sync.service" \
   "/etc/systemd/system/$UNIT_NAME"
 DROPIN_DIR="/etc/systemd/system/$UNIT_NAME.d"
 DROPIN_FILE="$DROPIN_DIR/20-local-hot-storage.conf"
-[[ ! -L "$DROPIN_DIR" && ! -L "$DROPIN_FILE" ]] || {
+ARCHIVE_DROPIN_FILE="$DROPIN_DIR/30-local-direct-archive.conf"
+[[ ! -L "$DROPIN_DIR" && ! -L "$DROPIN_FILE" && ! -L "$ARCHIVE_DROPIN_FILE" ]] || {
   echo "$DROPIN_DIR and its managed drop-in must not be symlinks" >&2
   exit 1
 }
 install -d -o root -g root -m 0755 "$DROPIN_DIR"
 install -m 0644 "$SOURCE_ROOT/deploy/td-market-data-sync-local-hot.conf" "$DROPIN_FILE"
+install -m 0644 "$SOURCE_ROOT/deploy/td-market-data-sync-local-archive.conf" "$ARCHIVE_DROPIN_FILE"
 systemctl daemon-reload
 systemctl enable "$UNIT_NAME"
 systemctl restart "$UNIT_NAME" || systemctl start "$UNIT_NAME"
 
-echo "Remote captures will be restored directly into: /mnt/data/td-market-data-local/hot"
-echo "Previously archived captures are checked under: /mnt/data/td-market-data-local/archive"
+echo "Verified remote captures will be stored directly in: /mnt/data/td-market-data-local/archive"
+echo "No hot JSONL copies are written by the sync service"
 echo "Sync cursor: /mnt/data/td-market-data-local/state/vps-sync-cursor.json"
 echo "Environment file: $ENV_FILE (mode 0600; secret value was not displayed)"
 echo "Check status with: systemctl status $UNIT_NAME"

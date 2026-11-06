@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import zstandard
+from capture_recovery import SCHEMA as RECOVERY_SCHEMA, recovery_provenance
 
 
 def digest(path: Path) -> tuple[str, int]:
@@ -21,6 +22,52 @@ def digest(path: Path) -> tuple[str, int]:
             value.update(block)
             size += len(block)
     return value.hexdigest(), size
+
+
+def validate_recovery_sidecar(capture: Path, metadata: dict, raw_sha256: str) -> dict | None:
+    value = metadata.get("recovery_provenance")
+    if value is None:
+        return None
+    capture_id = capture.name.rsplit("-", 1)[-1].removesuffix(".jsonl")
+    recovered = value.get("recovered_at_unix_ns") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or value.get("schema") != RECOVERY_SCHEMA
+            or value.get("version") != 1 or value.get("capture_id") != capture_id
+            or value.get("origin") != "vps_recovered" or value.get("raw_sha256") != raw_sha256
+            or not isinstance(recovered, int) or isinstance(recovered, bool) or recovered <= 0
+            or not isinstance(value.get("relay_host"), str) or not value["relay_host"]
+            or len(value["relay_host"]) > 255):
+        raise ValueError("archive recovery provenance does not match the staged capture")
+    return value
+
+
+def publish_recovery_sidecar(capture: Path, metadata: dict, raw_sha256: str) -> None:
+    value = validate_recovery_sidecar(capture, metadata, raw_sha256)
+    if value is None:
+        return
+    capture_id = capture.name.rsplit("-", 1)[-1].removesuffix(".jsonl")
+    sidecar = capture.with_name(capture.name + ".recovery.json")
+    if sidecar.exists() or sidecar.is_symlink():
+        existing = recovery_provenance(capture, raw_sha256, capture_id)
+        if existing != value:
+            raise ValueError(f"staged recovery provenance differs from archive metadata: {sidecar}")
+        return
+    temporary = sidecar.with_name(sidecar.name + f".tmp-{os.getpid()}")
+    if temporary.exists() or temporary.is_symlink():
+        raise ValueError(f"staged recovery sidecar temporary already exists: {temporary}")
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, sidecar)
+        directory = os.open(sidecar.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+    recovery_provenance(capture, raw_sha256, capture_id)
 
 
 def stage_capture(capture: Path, hot_root: Path, archive_root: Path,
@@ -60,6 +107,7 @@ def stage_capture(capture: Path, hot_root: Path, archive_root: Path,
             or not isinstance(expected_raw_size, int) or isinstance(expected_raw_size, bool)
             or expected_raw_size < 0):
         raise ValueError("archive metadata raw-file identity is invalid")
+    validate_recovery_sidecar(capture, metadata, expected_raw_sha256)
 
     staging_root.mkdir(parents=True, exist_ok=True)
     staging_root = staging_root.resolve(strict=True)
@@ -71,6 +119,7 @@ def stage_capture(capture: Path, hot_root: Path, archive_root: Path,
         raw_sha256, raw_size = digest(destination)
         if raw_sha256 != expected_raw_sha256 or raw_size != expected_raw_size:
             raise ValueError("existing staged capture does not match archive metadata")
+        publish_recovery_sidecar(destination, metadata, expected_raw_sha256)
         return destination
 
     temporary = destination.with_name(destination.name + f".partial-{os.getpid()}")
@@ -88,6 +137,7 @@ def stage_capture(capture: Path, hot_root: Path, archive_root: Path,
         if raw_hash.hexdigest() != expected_raw_sha256 or raw_size != expected_raw_size:
             raise ValueError("decompressed capture checksum or size mismatch")
         os.replace(temporary, destination)
+        publish_recovery_sidecar(destination, metadata, expected_raw_sha256)
     finally:
         temporary.unlink(missing_ok=True)
     return destination
