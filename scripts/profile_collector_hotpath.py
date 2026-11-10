@@ -16,6 +16,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from collector import CaptureFile, compact_json, sha256_bytes
+from collector import write_funding_cursor
+import zstandard
 
 
 RAW = json.dumps({
@@ -104,6 +106,21 @@ def main() -> None:
                            accepted_for_sequence=True)
         combined_seconds = time.perf_counter() - combined_started
         combined.close("profile_complete")
+        compression_path = temporary / "profile.jsonl.zst"
+        compression_started = time.perf_counter()
+        with capture.path.open("rb") as source, compression_path.open("xb") as output:
+            with zstandard.ZstdCompressor(level=3, write_checksum=True).stream_writer(
+                    output, closefd=False) as writer:
+                shutil.copyfileobj(source, writer, length=1024 * 1024)
+            output.flush()
+            os.fsync(output.fileno())
+        compression_seconds = time.perf_counter() - compression_started
+        state_updates = min(args.frames, 1_000)
+        state_path = temporary / "funding-cursor.json"
+        state_started = time.perf_counter()
+        for index in range(state_updates):
+            write_funding_cursor(state_path, 1_700_000_000_000, 1_700_000_000_000 + index)
+        state_seconds = time.perf_counter() - state_started
         user_after, system_after, rss_after = usage_snapshot()
         result = {
             "frames": args.frames,
@@ -113,6 +130,13 @@ def main() -> None:
             "compact_json_frames_per_second": round(args.frames / json_seconds, 2),
             "capture_write_frames_per_second": round(args.frames / write_seconds, 2),
             "parse_and_capture_write_frames_per_second": round(args.frames / combined_seconds, 2),
+            "zstd_compress_frames_per_second": round(args.frames / compression_seconds, 2),
+            "zstd_compress_mib_per_second": round(
+                output_bytes / 1024 / 1024 / compression_seconds, 2
+            ),
+            "zstd_output_bytes": compression_path.stat().st_size,
+            "funding_cursor_updates": state_updates,
+            "funding_cursor_updates_per_second": round(state_updates / state_seconds, 2),
             "capture_output_bytes": output_bytes,
             "capture_output_mib": round(output_bytes / 1024 / 1024, 3),
             "process_user_cpu_seconds": round(user_after - user_before, 6),

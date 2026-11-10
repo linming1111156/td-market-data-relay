@@ -39,7 +39,7 @@ docker compose exec -T usdm-aggtrades \
   --frames 10000 --work-dir /var/lib/td-market-data/state
 ```
 
-脚本输出 `parse_and_capture_write_frames_per_second`、CPU 时间和当前 RSS。
+脚本输出 `parse_and_capture_write_frames_per_second`、zstd 压缩吞吐、funding cursor 原子更新吞吐、CPU 时间和当前 RSS。
 只把 VPS 实测的这三个指标与容器限制、实际接收速率和队列溢出记录一起比较，不能用离线文件吞吐直接推断网络采集性能。
 
 ### Phase 3：Rust 加速边界
