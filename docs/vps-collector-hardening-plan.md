@@ -21,7 +21,7 @@
 - [x] relay index 明确暴露 `gap_count`、`disconnect_count`、停止原因、闭合状态和 `trainable` 状态，避免本地同步后才发现不可用。
 - [x] 增加 VPS 端健康指标：分片停止记录包含重连/缺口计数、队列高水位、最大帧间延迟、进程 CPU/RSS；`sequence_gap` 停止原因代表分片已隔离。
 
-relay 的 `/v1/captures` 条目现在包含 `capture_started_at_ns`、`capture_stopped_at_ns`、`gap_count`、`disconnect_count`、`stop_reason`、`closed`、`trainable`，以及可用时的 `process_user_cpu_seconds`、`process_system_cpu_seconds`、`process_rss_kib`、`receiver_queue_limit`、`receiver_queue_high_water`、`max_interframe_delay_ns`。同步产生的本地 archive 元数据会保留这些字段。
+relay 的 `/v1/captures` 条目现在包含 `capture_started_at_ns`、`capture_stopped_at_ns`、`gap_count`、`disconnect_count`、`stop_reason`、`closed`、`trainable`，以及可用时的 `process_user_cpu_seconds`、`process_system_cpu_seconds`、`process_rss_kib`、`receiver_queue_limit`、`receiver_queue_high_water`、`max_interframe_delay_ns`，以及采集器 `source_revision`、可执行文件 SHA-256 和 `network_proxy_mode`。同步产生的本地 archive 元数据会保留这些字段。
 
 ### Phase 2：性能基准
 

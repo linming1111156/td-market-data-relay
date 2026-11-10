@@ -62,6 +62,13 @@ def main() -> None:
         "total_gap_count": sum(int(row["gap_count"]) for _, row in captures),
         "total_disconnect_count": sum(int(row["disconnect_count"]) for _, row in captures),
         "runtime_metrics_complete_count": len(runtime_complete),
+        "source_revisions": sorted({str(row["source_revision"]) for _, row in captures
+                                     if isinstance(row.get("source_revision"), str)}),
+        "collector_executable_sha256_values": sorted({str(row["collector_executable_sha256"])
+                                                       for _, row in captures
+                                                       if isinstance(row.get("collector_executable_sha256"), str)}),
+        "network_proxy_modes": sorted({str(row["network_proxy_mode"]) for _, row in captures
+                                       if isinstance(row.get("network_proxy_mode"), str)}),
         "max_process_rss_kib": max((int(row["process_rss_kib"]) for row in runtime_complete), default=None),
         "max_receiver_queue_high_water": max(
             (int(row["receiver_queue_high_water"]) for row in runtime_complete), default=None

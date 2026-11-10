@@ -307,6 +307,10 @@ def capture_quality(path: Path) -> dict[str, object]:
         "closed": closed,
         "trainable": trainable,
     }
+    for key in ("source_revision", "collector_executable_sha256", "network_proxy_mode"):
+        value = first.get(key)
+        if isinstance(value, str) and value:
+            quality[key] = value
     if stopped is not None:
         for key in ("process_user_cpu_seconds", "process_system_cpu_seconds"):
             value = stopped.get(key)
@@ -531,7 +535,8 @@ def capture_entry(root: Path, path: Path) -> dict[str, object] | None:
             "disconnect_count", "stop_reason", "closed", "trainable",
             "process_user_cpu_seconds", "process_system_cpu_seconds",
             "process_rss_kib", "receiver_queue_limit", "receiver_queue_high_water",
-            "max_interframe_delay_ns")
+            "max_interframe_delay_ns", "source_revision",
+            "collector_executable_sha256", "network_proxy_mode")
                    if key in metadata}
         if not all(key in quality for key in (
                 "capture_started_at_ns", "capture_stopped_at_ns", "gap_count",
