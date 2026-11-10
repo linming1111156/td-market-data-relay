@@ -88,4 +88,6 @@ docker compose ps
 docker compose logs --since=5m --tail=100 usdm-aggtrades usdm-depth
 ```
 
+GHCR 工作流会把提交 SHA 写入镜像的 `SOURCE_REVISION`；新分片的 relay index 和本地 archive 元数据应显示该 SHA。若显示 `unreleased`，说明仍在运行本地构建或旧镜像，不能作为本轮运行时验收证据。
+
 重点观察新分片是否出现 `capture segment discarded: ... reason=sequence_gap`，以及随后建立的分片是否有 `gap_count=0`。带 `reason=sequence_gap` 的旧分片必须保留为审计证据，但不得进入训练集。

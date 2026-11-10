@@ -17,7 +17,6 @@ x-collector: &collector
   environment:
     HOT_ROOT: /var/lib/td-market-data/hot
     SOURCE_HOST_ID: ${SOURCE_HOST_ID:-vps-market-data}
-    SOURCE_REVISION: ${SOURCE_REVISION:-unreleased}
     TD_MARKET_DATA_SOCKS5_PROXY: ${TD_MARKET_DATA_SOCKS5_PROXY:-}
   extra_hosts:
     - "host.docker.internal:host-gateway"

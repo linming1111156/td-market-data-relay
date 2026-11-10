@@ -1,5 +1,6 @@
 FROM python:3.13-slim-bookworm
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ARG SOURCE_REVISION=unreleased
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 SOURCE_REVISION=${SOURCE_REVISION}
 WORKDIR /app
 RUN groupadd --system --gid 10001 marketdata \
  && useradd --system --uid 10001 --gid marketdata --home-dir /nonexistent \
