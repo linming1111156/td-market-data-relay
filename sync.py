@@ -21,7 +21,8 @@ from pathlib import Path
 from collector import SUPPORTED_STREAMS as COLLECTOR_SUPPORTED_STREAMS
 
 SUPPORTED_STREAMS = COLLECTOR_SUPPORTED_STREAMS
-RELAY_RETENTION_NS = 73 * 3600 * 1_000_000_000
+RELAY_RETENTION_SECONDS = int(os.environ.get("TD_MARKET_DATA_RETENTION_SECONDS", "262800"))
+RELAY_RETENTION_NS = RELAY_RETENTION_SECONDS * 1_000_000_000
 LOSS_SCHEMA = "td_market_data_relay_early_discard_v1"
 MAX_LOSS_LEDGER_BYTES = 16 * 1024 * 1024
 MAX_CAPTURE_LINE_BYTES = 2 * 1024 * 1024
@@ -444,6 +445,8 @@ def main() -> None:
     args = parser.parse_args()
     if not args.base_url:
         raise SystemExit("--base-url or TD_RELAY_BASE_URL is required")
+    if not 73 * 3600 <= RELAY_RETENTION_SECONDS <= 30 * 24 * 3600:
+        raise SystemExit("TD_MARKET_DATA_RETENTION_SECONDS must be between 262800 (73h) and 2592000 (30d)")
     key = os.environ.get(args.api_key_env, "")
     if len(key) < 32:
         raise SystemExit(f"environment variable {args.api_key_env} must contain the relay API key")

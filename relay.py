@@ -679,8 +679,8 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     if not API_KEY or len(API_KEY) < 32:
         raise SystemExit("RELAY_API_KEY must be set to a random value of at least 32 characters")
-    if HOT_SECONDS != 3600 or DELETE_SECONDS != 73 * 3600:
-        raise SystemExit("retention policy is fixed: raw=1h, archive deletion=73h")
+    if HOT_SECONDS != 3600 or not 73 * 3600 <= DELETE_SECONDS <= 30 * 24 * 3600:
+        raise SystemExit("retention must keep raw=1h and archive retention between 73h and 30d")
     if MAX_ARCHIVE_BYTES < 512 * 1024 * 1024 or MAX_HOT_BYTES < 256 * 1024 * 1024:
         raise SystemExit("archive and hot storage caps are too small for bounded captures")
     threading.Thread(target=retention_worker, daemon=True).start()

@@ -419,16 +419,28 @@ the API bearer token remains required by the relay itself.
 
 The relay keeps capture files raw until they are at least one hour old, then
 compresses them with zstd into the archive volume. It removes archived files at
-73 hours from capture start. The archive has a 4 GiB default hard cap and the
+the configured `TD_MARKET_DATA_RETENTION_SECONDS` age (73 hours by default).
+The same variable must be set in the local sync service environment so its
+reconciliation horizon matches the relay. The supported range is 73 hours to
+30 days. The archive has a 4 GiB default hard cap and the
 raw hot area has a 1 GiB cap. If either cap is reached, the oldest available
 capture is discarded early to prevent unbounded disk growth. Each collector
 also has an individual 256 MiB capture limit. These are deliberate loss bounds:
-if they are reached, the API will not contain the full 73 hours. Set both
+if they are reached, the API will not contain the full configured retention
+window. Set both
 `MAX_ARCHIVE_BYTES` and `MAX_HOT_BYTES` to measured values appropriate for the
 VPS disk before deployment.
 
-Quota-driven early discards are written to a bounded, 73-hour loss ledger and
-included in the authenticated capture index. The local sync worker persists new
+For a 15-day retention window, set `TD_MARKET_DATA_RETENTION_SECONDS=1296000`
+in the VPS `.env` and the local sync service's environment file. Then size
+`MAX_ARCHIVE_BYTES` from at least one day of observed compressed archive growth
+multiplied by 15, with additional disk headroom; size `MAX_HOT_BYTES` for the
+observed raw one-hour rollover area. Check `df -h` before raising either cap.
+The retention value alone cannot prevent quota-based early deletion.
+
+Quota-driven early discards are written to a bounded loss ledger, retained for
+the same configured window, and included in the authenticated capture index.
+The local sync worker persists new
 loss records in `.relay-losses.jsonl` under its output root. If the VPS cannot
 record a discard safely, it keeps the capture and reports that the quota could
 not be reclaimed; disk pressure is surfaced instead of hiding the missing
@@ -450,7 +462,7 @@ record lacks capture lifecycle bounds. A clear result means only that no
 recorded quota loss overlaps; it is not proof of complete capture. Dataset
 exporters still enforce source coverage, sequence continuity, and time-window
 boundaries. Run sync continuously from the start of collection so its local
-ledger retains losses that later age out of the VPS's 73-hour loss index.
+ledger retains losses that later age out of the VPS loss index.
 
 ## Local recovery
 
@@ -481,7 +493,8 @@ For a long-running local recovery worker, set `TD_RELAY_BASE_URL` and
 /mnt/data/td-market-data-local/archive` and set `--output
 /mnt/data/td-market-data-local/hot`. The installed service uses this layout. It
 polls every five minutes by default and rechecks the full remotely retained
-73-hour index on every pass. Missing local captures are restored directly into
+window, controlled by `TD_MARKET_DATA_RETENTION_SECONDS`, on every pass.
+Missing local captures are restored directly into
 the same hot tree used by the local collectors. Existing compressed captures
 are matched using the local relay's raw hash metadata, so they aren't pulled
 back into hot on every scan. Conflicting same-name files are left untouched
