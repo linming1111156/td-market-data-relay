@@ -42,6 +42,14 @@ docker compose exec -T usdm-aggtrades \
 脚本输出 `parse_and_capture_write_frames_per_second`、zstd 压缩吞吐、funding cursor 原子更新吞吐、CPU 时间和当前 RSS。
 只把 VPS 实测的这三个指标与容器限制、实际接收速率和队列溢出记录一起比较，不能用离线文件吞吐直接推断网络采集性能。
 
+新镜像运行并完成本地同步后，可以只读汇总归档元数据：
+
+```sh
+python3 scripts/summarize_capture_quality.py \\
+  --archive-root /mnt/data/td-market-data-local/archive \\
+  --stream usdm-aggtrades --symbol BTCUSDT
+```
+
 ### Phase 3：Rust 加速边界
 
 - [ ] 只有当基准证明 Python 的 JSON 解析、字段校验或哈希占用主要 CPU 时，才实现 Rust 辅助引擎。
