@@ -8,5 +8,6 @@ RUN groupadd --system --gid 10001 marketdata \
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
 COPY collector.py export_funding_capture.py export_usdm_depth_dataset.py relay.py sync.py /app/
+COPY scripts/profile_collector_hotpath.py /app/scripts/profile_collector_hotpath.py
 USER 10001:10001
 ENTRYPOINT ["python3", "/app/collector.py"]

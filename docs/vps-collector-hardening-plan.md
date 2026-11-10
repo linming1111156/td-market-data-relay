@@ -29,6 +29,14 @@
 
 仓库提供 `scripts/profile_collector_hotpath.py` 作为本地热路径基准。当前开发机用 1,000 个合成帧测得约 37,416 帧/秒的完整 JSONL 写入路径；这只是合成基线，不代表 VPS 实际吞吐，必须在 VPS 运行窗口再次测量。
 
+新镜像包含该脚本，可在 VPS 使用共享数据卷运行：
+
+```sh
+docker compose exec -T usdm-aggtrades \
+  python3 /app/scripts/profile_collector_hotpath.py \
+  --frames 10000 --work-dir /var/lib/td-market-data/state
+```
+
 ### Phase 3：Rust 加速边界
 
 - [ ] 只有当基准证明 Python 的 JSON 解析、字段校验或哈希占用主要 CPU 时，才实现 Rust 辅助引擎。
