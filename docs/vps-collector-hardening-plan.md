@@ -29,7 +29,7 @@ relay 的 `/v1/captures` 条目现在包含 `capture_started_at_ns`、`capture_s
 - [ ] 使用 VPS 真实运行窗口记录队列深度和 `receiver queue overflow`，不要只用离线文件吞吐推断瓶颈。
 - [ ] 以“无队列溢出、无因 CPU 饱和造成的接收延迟、RSS 不超过容器限制”为验收条件。
 
-仓库提供 `scripts/profile_collector_hotpath.py` 作为本地热路径基准。当前开发机用 1,000 个合成帧测得约 37,416 帧/秒的完整 JSONL 写入路径；这只是合成基线，不代表 VPS 实际吞吐，必须在 VPS 运行窗口再次测量。
+仓库提供 `scripts/profile_collector_hotpath.py` 作为本地热路径基准。当前开发机用 10,000 个合成帧测得约 35,616 帧/秒的“解析+完整 JSONL 写入”路径，当前进程 RSS 约 36 MiB；这只是合成基线，不代表 VPS 实际吞吐，必须在 VPS 运行窗口再次测量。
 
 新镜像包含该脚本，可在 VPS 使用共享数据卷运行：
 
@@ -38,6 +38,9 @@ docker compose exec -T usdm-aggtrades \
   python3 /app/scripts/profile_collector_hotpath.py \
   --frames 10000 --work-dir /var/lib/td-market-data/state
 ```
+
+脚本输出 `parse_and_capture_write_frames_per_second`、CPU 时间和当前 RSS。
+只把 VPS 实测的这三个指标与容器限制、实际接收速率和队列溢出记录一起比较，不能用离线文件吞吐直接推断网络采集性能。
 
 ### Phase 3：Rust 加速边界
 

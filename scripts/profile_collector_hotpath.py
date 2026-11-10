@@ -39,6 +39,21 @@ def elapsed(callable_, count: int) -> tuple[float, object]:
     return time.perf_counter() - started, value
 
 
+def usage_snapshot() -> tuple[float, float, int]:
+    import resource
+
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    rss_kib = 0
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                rss_kib = int(line.split()[1])
+                break
+    except (OSError, ValueError):
+        pass
+    return usage.ru_utime, usage.ru_stime, rss_kib
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--frames", type=int, default=10_000)
@@ -54,6 +69,7 @@ def main() -> None:
     temporary = Path(tempfile.mkdtemp(prefix="collector-profile-", dir=args.work_dir))
     try:
         raw_bytes = RAW.encode()
+        user_before, system_before, rss_before = usage_snapshot()
         parse_seconds, _ = elapsed(lambda: [json.loads(RAW) for _ in range(args.frames)], args.frames)
         hash_seconds, _ = elapsed(lambda: [sha256_bytes(raw_bytes) for _ in range(args.frames)], args.frames)
         record = {
@@ -77,6 +93,18 @@ def main() -> None:
         capture.close("profile_complete")
         write_seconds = time.perf_counter() - write_started
         output_bytes = capture.path.stat().st_size
+        combined = CaptureFile(temporary, "usdm-aggtrades", "BTCUSDT", 1 << 30,
+                               "profile", 5_000)
+        combined_started = time.perf_counter()
+        for index in range(args.frames):
+            parsed = json.loads(RAW)
+            combined.frame(1794300000000000000 + index, 1000000000 + index, RAW,
+                           event_time_ms=parsed["E"], trade_id=parsed["a"],
+                           first_trade_id=parsed["a"], last_trade_id=parsed["a"],
+                           accepted_for_sequence=True)
+        combined_seconds = time.perf_counter() - combined_started
+        combined.close("profile_complete")
+        user_after, system_after, rss_after = usage_snapshot()
         result = {
             "frames": args.frames,
             "raw_frame_bytes": len(raw_bytes),
@@ -84,8 +112,13 @@ def main() -> None:
             "sha256_frames_per_second": round(args.frames / hash_seconds, 2),
             "compact_json_frames_per_second": round(args.frames / json_seconds, 2),
             "capture_write_frames_per_second": round(args.frames / write_seconds, 2),
+            "parse_and_capture_write_frames_per_second": round(args.frames / combined_seconds, 2),
             "capture_output_bytes": output_bytes,
             "capture_output_mib": round(output_bytes / 1024 / 1024, 3),
+            "process_user_cpu_seconds": round(user_after - user_before, 6),
+            "process_system_cpu_seconds": round(system_after - system_before, 6),
+            "process_rss_kib": rss_after,
+            "process_rss_delta_kib": max(0, rss_after - rss_before),
             "work_dir": str(args.work_dir),
             "note": "Synthetic local baseline; run on the VPS during normal operation before deciding on Rust.",
         }
