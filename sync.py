@@ -122,7 +122,7 @@ def capture_time_from_name(filename: str) -> int:
 
 def archive_metadata(target: Path, entry: dict, raw_size: int, relay_host: str,
                      recovered_at_ns: int, filename: str | None = None) -> dict:
-    return {
+    metadata = {
         "schema": "td_market_data_archive_metadata_v1",
         "capture_id": str(entry["id"]),
         "raw_sha256": str(entry["raw_sha256"]),
@@ -140,6 +140,11 @@ def archive_metadata(target: Path, entry: dict, raw_size: int, relay_host: str,
             "relay_host": relay_host,
         },
     }
+    for key in ("capture_started_at_ns", "capture_stopped_at_ns", "gap_count",
+                "disconnect_count", "stop_reason", "closed", "trainable"):
+        if key in entry:
+            metadata[key] = entry[key]
+    return metadata
 
 
 def write_archive_metadata(target: Path, metadata: dict) -> None:

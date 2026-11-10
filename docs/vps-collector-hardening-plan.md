@@ -6,7 +6,7 @@
 
 采集器已经有断线重连循环。异常后会按 1、2、4 秒退避，最长 60 秒再建立 WebSocket；深度流重连时会重新获取 REST 快照并重新桥接序列。
 
-当前主要缺陷是缺口处理：aggTrades 在收到不连续的交易 ID 后，会记录 `gap_detected`，将高水位前移，然后继续写入同一个分片。重连只能接收新数据，不能补回断线期间已经错过的交易，因此这种分片必须被标记为不可训练，或者先用 REST 按 ID 补齐。
+当前主要缺陷是缺口处理：aggTrades 重连只能接收新数据，不能补回断线期间已经错过的交易。现在采集器会在检测到不连续交易 ID 后关闭并隔离当前分片，重置高水位后建立新分片；后续仍可评估 REST 按 ID 补齐。
 
 2026-11-10 对 VPS 同步数据的检查结果：43 个 USD-M 深度分片中 25 个无缺口；43 个 USD-M aggTrades 分片中只有 5 个无缺口。文件哈希和 zstd 校验正常，缺口产生在 VPS WebSocket 采集阶段，不是同步传输损坏。
 
@@ -15,11 +15,13 @@
 ### Phase 1：可靠性修复
 
 - [x] aggTrades 第一个交易 ID 缺口出现时立即结束当前逻辑分片，禁止继续把不连续数据伪装成连续数据。当前实现关闭分片并以 `reason=sequence_gap` 隔离，然后重置高水位建立新分片。
-- [ ] 记录缺口的前后交易 ID、会话 ID、断线原因和重连次数。
+- [x] 记录缺口的前后交易 ID、会话 ID、断线原因和重连次数。
 - [ ] 评估 Binance REST aggTrades 按交易 ID补回；补回不完整时保留不可训练标记并丢弃该窗口。
 - [x] 深度流继续采用“断线、重新快照、重新桥接”的流程；任何桥接失败都让当前分片以 `sequence_gap` 隔离。
-- [ ] relay index 明确暴露 `gap_count`、`disconnect_count` 和可训练状态，避免本地同步后才发现不可用。
+- [x] relay index 明确暴露 `gap_count`、`disconnect_count`、停止原因、闭合状态和 `trainable` 状态，避免本地同步后才发现不可用。
 - [ ] 增加 VPS 端健康指标：连接数、重连数、缺口数、队列溢出、接收延迟和分片淘汰数。
+
+relay 的 `/v1/captures` 条目现在包含 `capture_started_at_ns`、`capture_stopped_at_ns`、`gap_count`、`disconnect_count`、`stop_reason`、`closed` 和 `trainable`。同步产生的本地 archive 元数据会保留这些字段。
 
 ### Phase 2：性能基准
 

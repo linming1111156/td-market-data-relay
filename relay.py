@@ -227,6 +227,88 @@ def capture_started_at(path: Path) -> float:
         return path.stat().st_mtime
 
 
+def _capture_quality_record(raw: bytes) -> dict[str, object]:
+    if len(raw) > 2 * 1024 * 1024 or not raw.endswith(b"\n"):
+        raise OSError("capture quality record is truncated or oversized")
+    try:
+        row = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise OSError("capture quality record is invalid JSON") from error
+    if (not isinstance(row, dict)
+            or row.get("schema") != "td_public_market_capture_record"
+            or row.get("version") != 1):
+        raise OSError("capture quality record has an unsupported schema")
+    return row
+
+
+def capture_quality(path: Path) -> dict[str, object]:
+    """Read lifecycle quality without parsing every market frame.
+
+    Raw hot files use their first and last JSONL records. Archived files fall
+    back to a streaming scan only when older metadata lacks quality fields.
+    """
+    first: dict[str, object] | None = None
+    last: dict[str, object] | None = None
+    if path.suffix == ".zst":
+        try:
+            with path.open("rb") as source:
+                with zstandard.ZstdDecompressor().stream_reader(source) as decoded:
+                    import io
+
+                    stream = io.BufferedReader(decoded)
+                    for raw in stream:
+                        row = _capture_quality_record(raw)
+                        if first is None:
+                            first = row
+                        last = row
+        except zstandard.ZstdError as error:
+            raise OSError("archived capture has invalid zstd data") from error
+    else:
+        with path.open("rb") as source:
+            first = _capture_quality_record(source.readline(2 * 1024 * 1024 + 1))
+            source.seek(0, os.SEEK_END)
+            size = source.tell()
+            source.seek(max(0, size - 2 * 1024 * 1024), os.SEEK_SET)
+            tail = source.read()
+        if not tail.endswith(b"\n"):
+            raise OSError("capture quality footer is incomplete")
+        last_raw = tail.splitlines()[-1] if tail.splitlines() else b""
+        last = _capture_quality_record(last_raw + b"\n")
+    if first is None or first.get("record_type") != "capture_started":
+        raise OSError("capture quality header is missing")
+    started_ns = first.get("recorded_at_unix_ns")
+    stopped = last if last and last.get("record_type") == "capture_stopped" else None
+    stopped_ns = stopped.get("recorded_at_unix_ns") if stopped else None
+    if (not isinstance(started_ns, int) or isinstance(started_ns, bool)
+            or started_ns < 0):
+        raise OSError("capture quality start timestamp is invalid")
+    closed = stopped is not None
+    if stopped_ns is not None and (
+            not isinstance(stopped_ns, int) or isinstance(stopped_ns, bool)
+            or stopped_ns < started_ns):
+        raise OSError("capture quality stop timestamp is invalid")
+    gap_count = stopped.get("gap_count", 0) if stopped else None
+    disconnect_count = stopped.get("disconnect_count", 0) if stopped else None
+    stop_reason = stopped.get("reason") if stopped else None
+    if (gap_count is not None and (not isinstance(gap_count, int) or gap_count < 0)
+            or disconnect_count is not None
+            and (not isinstance(disconnect_count, int) or disconnect_count < 0)):
+        raise OSError("capture quality counters are invalid")
+    trainable = bool(
+        closed and gap_count == 0 and disconnect_count == 0
+        and stop_reason in {"duration_elapsed", "sigterm"}
+    )
+    return {
+        "capture_started_at_ns": started_ns,
+        "capture_stopped_at_ns": stopped_ns,
+        "gap_count": gap_count,
+        "disconnect_count": disconnect_count,
+        "stop_reason": stop_reason,
+        "closed": closed,
+        "trainable": trainable,
+    }
+
+
 def compress_old_captures() -> None:
     now = time.time()
     ARCHIVE.mkdir(parents=True, exist_ok=True)
@@ -340,6 +422,7 @@ def compress_old_captures() -> None:
                         "raw_sha256": source_digest.hexdigest(), "raw_size_bytes": source_bytes,
                         "compressed_sha256": sha256_file(temp), "compressed_size_bytes": size,
                         "captured_at_unix_seconds": start_time,
+                        **capture_quality(path),
                         **({"recovery_provenance": recovery_provenance}
                            if recovery_provenance is not None else {})}
             with meta_temp.open("xb") as metadata_file:
@@ -430,9 +513,16 @@ def capture_entry(root: Path, path: Path) -> dict[str, object] | None:
             return None
         file_sha = metadata.get("compressed_sha256")
         raw_sha = metadata.get("raw_sha256")
+        quality = {key: metadata[key] for key in (
+            "capture_started_at_ns", "capture_stopped_at_ns", "gap_count",
+            "disconnect_count", "stop_reason", "closed", "trainable")
+                   if key in metadata}
+        if len(quality) != 7:
+            quality = capture_quality(path)
     else:
         file_sha = cached_sha256(path, st.st_mtime_ns, st.st_size)
         raw_sha = file_sha
+        quality = capture_quality(path)
     if (not isinstance(file_sha, str) or len(file_sha) != 64
             or any(char not in "0123456789abcdef" for char in file_sha)
             or not isinstance(raw_sha, str) or len(raw_sha) != 64
@@ -440,7 +530,8 @@ def capture_entry(root: Path, path: Path) -> dict[str, object] | None:
         return None
     return {"id": capture_id, "stream": stream, "symbol": symbol, "path": str(relative),
             "compressed": path.suffix == ".zst", "size_bytes": st.st_size,
-            "modified_at_unix_ns": st.st_mtime_ns, "sha256": file_sha, "raw_sha256": raw_sha}
+            "modified_at_unix_ns": st.st_mtime_ns, "sha256": file_sha, "raw_sha256": raw_sha,
+            **quality}
 
 
 def capture_index(since_ns: int, until_ns: int, stream_filter: str, symbol_filter: str) -> list[dict[str, object]]:

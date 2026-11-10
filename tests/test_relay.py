@@ -19,7 +19,8 @@ import relay
 import sync
 
 
-def write_capture(root: Path, start_seconds: float | None = None) -> tuple[Path, bytes]:
+def write_capture(root: Path, start_seconds: float | None = None, *, gap_count: int = 0,
+                  disconnect_count: int = 0, stop_reason: str = "duration_elapsed") -> tuple[Path, bytes]:
     root.mkdir(parents=True, exist_ok=True)
     capture_id = uuid.uuid4().hex
     captured_at = start_seconds if start_seconds is not None else time.time() - 7200
@@ -31,7 +32,9 @@ def write_capture(root: Path, start_seconds: float | None = None) -> tuple[Path,
          "record_type": "capture_started", "recorded_at_unix_ns": int(captured_at * 1e9),
          "stream": "usdm-depth", "symbol": "BTCUSDT"},
         {"schema": "td_public_market_capture_record", "version": 1,
-         "record_type": "capture_stopped", "recorded_at_unix_ns": int((captured_at + 3600) * 1e9)},
+         "record_type": "capture_stopped", "recorded_at_unix_ns": int((captured_at + 3600) * 1e9),
+         "reason": stop_reason, "gap_count": gap_count,
+         "disconnect_count": disconnect_count},
     ]
     payload = b"".join((json.dumps(row, separators=(",", ":")) + "\n").encode() for row in rows)
     path.write_bytes(payload)
@@ -68,6 +71,19 @@ class QuietRelayHandler(relay.Handler):
 
 
 class RelayTests(unittest.TestCase):
+    def test_capture_index_exposes_capture_quality(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            hot, archive = Path(temporary) / "hot", Path(temporary) / "archive"
+            capture, _ = write_capture(hot, gap_count=1, disconnect_count=1,
+                                       stop_reason="sequence_gap")
+            with patch.object(relay, "HOT", hot), patch.object(relay, "ARCHIVE", archive):
+                entries = relay.capture_index(0, time.time_ns(), "", "")
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0]["gap_count"], 1)
+            self.assertEqual(entries[0]["disconnect_count"], 1)
+            self.assertEqual(entries[0]["stop_reason"], "sequence_gap")
+            self.assertFalse(entries[0]["trainable"])
+
     def test_archive_preserves_vps_recovery_provenance(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
