@@ -14,18 +14,20 @@
 
 ### Phase 1：可靠性修复
 
-- [ ] aggTrades 第一个交易 ID 缺口出现时立即结束当前逻辑分片，禁止继续把不连续数据伪装成连续数据。
+- [x] aggTrades 第一个交易 ID 缺口出现时立即结束当前逻辑分片，禁止继续把不连续数据伪装成连续数据。当前实现关闭分片并以 `reason=sequence_gap` 隔离，然后重置高水位建立新分片。
 - [ ] 记录缺口的前后交易 ID、会话 ID、断线原因和重连次数。
 - [ ] 评估 Binance REST aggTrades 按交易 ID补回；补回不完整时保留不可训练标记并丢弃该窗口。
-- [ ] 深度流继续采用“断线、重新快照、重新桥接”的流程；任何桥接失败都让分片不可用。
+- [x] 深度流继续采用“断线、重新快照、重新桥接”的流程；任何桥接失败都让当前分片以 `sequence_gap` 隔离。
 - [ ] relay index 明确暴露 `gap_count`、`disconnect_count` 和可训练状态，避免本地同步后才发现不可用。
 - [ ] 增加 VPS 端健康指标：连接数、重连数、缺口数、队列溢出、接收延迟和分片淘汰数。
 
 ### Phase 2：性能基准
 
 - [ ] 在 VPS 上分别测量 WebSocket 接收、JSON 解析、SHA-256、JSONL 写盘、fsync 和 relay 压缩的 CPU、RSS、磁盘写入量。
-- [ ] 使用真实运行窗口记录队列深度和 `receiver queue overflow`，不要只用离线文件吞吐推断瓶颈。
+- [ ] 使用 VPS 真实运行窗口记录队列深度和 `receiver queue overflow`，不要只用离线文件吞吐推断瓶颈。
 - [ ] 以“无队列溢出、无因 CPU 饱和造成的接收延迟、RSS 不超过容器限制”为验收条件。
+
+仓库提供 `scripts/profile_collector_hotpath.py` 作为本地热路径基准。当前开发机用 1,000 个合成帧测得约 37,416 帧/秒的完整 JSONL 写入路径；这只是合成基线，不代表 VPS 实际吞吐，必须在 VPS 运行窗口再次测量。
 
 ### Phase 3：Rust 加速边界
 
@@ -34,6 +36,8 @@
 - [ ] 保留 Python 负责 WebSocket、SOCKS5、退避重连、REST 补回和策略编排；Rust 不负责网络恢复。
 - [ ] 优先采用独立 Rust helper 或稳定的批处理接口，避免为单帧调用引入 PyO3 跨语言开销。
 - [ ] Rust 版本必须与 Python 版本逐条比对哈希、序列结果、gap 标记和输出字节，再进入镜像。
+
+当前静态热点位于 `collector.py` 的每帧 `json.loads`、原始帧 UTF-8 编码、SHA-256、`json.dumps` 和无缓冲写盘；网络接收、SOCKS5 和退避重连仍属于 Python 编排层。尚未有 VPS 运行时 CPU、队列溢出或 RSS 基准，因此暂不引入 Rust helper。
 
 ## 暂不做的事情
 
@@ -47,3 +51,18 @@
 2. aggTrades 可回补的缺口经过交易 ID 和哈希校验；不可回补的窗口不会进入训练集。
 3. 深度重连后的快照桥接通过序列校验。
 4. 性能基准证明 Rust 改动带来实际收益后，才合入 Rust helper；否则保持 Python 实现。
+
+## 部署说明
+
+本次改动只影响 collector 镜像和测试/文档，不影响正式 Gateway。发布镜像后，在 VPS 项目目录执行：
+
+```sh
+git pull --ff-only
+docker compose config --quiet
+docker compose pull
+docker compose up -d --no-build
+docker compose ps
+docker compose logs --since=5m --tail=100 usdm-aggtrades usdm-depth
+```
+
+重点观察新分片是否出现 `capture segment discarded: ... reason=sequence_gap`，以及随后建立的分片是否有 `gap_count=0`。带 `reason=sequence_gap` 的旧分片必须保留为审计证据，但不得进入训练集。

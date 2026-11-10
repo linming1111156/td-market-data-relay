@@ -639,14 +639,14 @@ async def receive_observation_session(
                                   accepted_for_sequence=False)
                     capture.gap(f"{kind}_id_discontinuity", expected_trade_id=previous + 1,
                                 received_trade_id=trade_id, session_id=session_id)
-                    # Keep capturing after a sequence gap. Reconnecting while
-                    # retaining the old ID makes every subsequent session
-                    # fail against the same stale expected_trade_id forever.
-                    # Rebase only on a forward ID; an old/duplicate frame must
-                    # not move the high-water mark backwards.
-                    if trade_id > previous:
-                        last_trade_id[0] = trade_id
-                    continue
+                    # The missing IDs cannot be reconstructed from the WebSocket
+                    # stream. End this logical segment so it can never be
+                    # mistaken for a continuous training source. The caller
+                    # resets the high-water mark before starting a new segment.
+                    raise SequenceGap(
+                        f"{kind} trade ID discontinuity: expected {previous + 1}, "
+                        f"received {trade_id}"
+                    )
                 last_trade_id[0] = trade_id
                 capture.frame(received_ns, monotonic_ns, raw, session_id=session_id,
                               event_time_ms=update.get("E"), trade_time_ms=update.get("T"),
@@ -702,7 +702,7 @@ async def run_capture(args: argparse.Namespace) -> None:
         await run_finalized_funding_capture(args, shutdown)
         return
     source_revision = os.environ.get("SOURCE_REVISION", "unreleased")
-    capture = CaptureFile(root, args.kind, symbol, args.max_bytes, source_revision, args.max_gap_ms)
+    capture: CaptureFile | None = None
     stop_at = time.monotonic() + args.duration_seconds
     retry = 1.0
     attempt = 0
@@ -711,6 +711,9 @@ async def run_capture(args: argparse.Namespace) -> None:
     stop_reason = "duration_elapsed"
     try:
         while time.monotonic() < stop_at and not shutdown.is_set():
+            if capture is None:
+                capture = CaptureFile(root, args.kind, symbol, args.max_bytes,
+                                      source_revision, args.max_gap_ms)
             attempt += 1
             try:
                 if args.kind in {"spot-depth", "usdm-depth"}:
@@ -724,6 +727,28 @@ async def run_capture(args: argparse.Namespace) -> None:
             except CaptureLimit:
                 stop_reason = "capture_byte_limit"
                 break
+            except SequenceGap as error:
+                # A sequence gap invalidates the current logical segment. Keep
+                # its evidence and close it with a non-healthy stop reason;
+                # then reconnect from a fresh high-water mark and fresh file.
+                capture.disconnects += 1
+                capture.record("session_disconnected", recorded_at_unix_ns=now_ns(),
+                               attempt=attempt, reason=f"{type(error).__name__}: {error}",
+                               reconnect_delay_ms=int(retry * 1000))
+                capture.close("sequence_gap")
+                print(f"capture segment discarded: {capture.path} reason=sequence_gap "
+                      f"gaps={capture.gaps} disconnects={capture.disconnects}", flush=True)
+                capture = None
+                last_trade_id[0] = None
+                last_closed_kline_open_ms[0] = None
+                if shutdown.is_set() or time.monotonic() >= stop_at:
+                    break
+                try:
+                    await asyncio.wait_for(shutdown.wait(), retry)
+                except asyncio.TimeoutError:
+                    pass
+                retry = min(retry * 2, 60.0)
+                continue
             except Exception as error:
                 capture.disconnects += 1
                 capture.record("session_disconnected", recorded_at_unix_ns=now_ns(),
@@ -741,8 +766,10 @@ async def run_capture(args: argparse.Namespace) -> None:
     except CaptureLimit:
         stop_reason = "capture_byte_limit"
     finally:
-        capture.close(stop_reason)
-        print(f"capture stopped: {capture.path} records={capture.observations} gaps={capture.gaps} disconnects={capture.disconnects}")
+        if capture is not None:
+            capture.close(stop_reason)
+            print(f"capture stopped: {capture.path} records={capture.observations} "
+                  f"gaps={capture.gaps} disconnects={capture.disconnects}", flush=True)
 
 
 def parse_args() -> argparse.Namespace:

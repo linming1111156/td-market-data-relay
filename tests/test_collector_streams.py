@@ -1,11 +1,13 @@
 import unittest
 import json
 import tempfile
+import asyncio
+import argparse
 from pathlib import Path
 from unittest.mock import patch
 
 from collector import (fetch_finalized_funding, read_or_initialize_funding_cursor,
-                       websocket_url, write_funding_cursor)
+                       run_capture, SequenceGap, websocket_url, write_funding_cursor)
 
 
 class CollectorStreamTests(unittest.TestCase):
@@ -20,7 +22,7 @@ class CollectorStreamTests(unittest.TestCase):
         )
         self.assertEqual(
             websocket_url("spot-klines-1m", "BTCUSDT"),
-            "wss://stream.binance.com:9443/ws/btcusdt@kline_1m",
+            "wss://stream.binance.com:443/ws/btcusdt@kline_1m",
         )
 
     def test_existing_stream_routes_remain_market_specific(self):
@@ -77,6 +79,39 @@ class CollectorStreamTests(unittest.TestCase):
         with patch("collector.urllib.request.urlopen", return_value=Response()):
             with self.assertRaisesRegex(ValueError, "future-only cursor"):
                 fetch_finalized_funding("BTCUSDT", 1_000)
+
+    def test_sequence_gap_rotates_to_a_fresh_capture_segment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = argparse.Namespace(
+                kind="usdm-aggtrades", symbol="BTCUSDT", hot_root=directory,
+                max_gap_ms=5_000, max_bytes=1_000_000, duration_seconds=30,
+                poll_seconds=60, cursor_root=directory,
+            )
+            calls = 0
+
+            async def fake_observation(capture, _kind, _symbol, _max_gap_ms,
+                                       _stop_at, _last_trade_id,
+                                       _last_closed_kline_open_ms, shutdown):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    capture.gap("usdm-aggtrades_id_discontinuity",
+                                expected_trade_id=10, received_trade_id=12)
+                    raise SequenceGap("missing aggregate trade ID")
+                shutdown.set()
+
+            with patch("collector.receive_observation_session", new=fake_observation):
+                asyncio.run(run_capture(args))
+
+            captures = sorted(Path(directory).glob("usdm-aggtrades/BTCUSDT/*.jsonl"))
+            self.assertEqual(len(captures), 2)
+            first = [json.loads(line) for line in captures[0].read_text().splitlines()]
+            second = [json.loads(line) for line in captures[1].read_text().splitlines()]
+            self.assertEqual(first[-1]["record_type"], "capture_stopped")
+            self.assertEqual(first[-1]["reason"], "sequence_gap")
+            self.assertEqual(first[-1]["gap_count"], 1)
+            self.assertEqual(second[0]["record_type"], "capture_started")
+            self.assertEqual(second[-1]["reason"], "sigterm")
 
 
 if __name__ == "__main__":
