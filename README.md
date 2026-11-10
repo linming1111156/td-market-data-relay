@@ -388,6 +388,26 @@ GHCR package no registry credentials are required; a private package requires
    docker compose -f compose.yaml up -d --no-build
    ```
 
+   On a new VPS, initialize the named volume once for the collector's
+   non-root UID before starting Compose. This avoids requiring `CAP_CHOWN`
+   inside the restricted `volume-init` container:
+
+   ```sh
+   docker compose -f compose.yaml pull
+   docker volume create td-market-data-relay_market-data
+   volume_path=$(docker volume inspect td-market-data-relay_market-data \
+     --format '{{.Mountpoint}}')
+   install -d -o 10001 -g 10001 \
+     "$volume_path" \
+     "$volume_path/hot" "$volume_path/archive" "$volume_path/state"
+   docker compose -f compose.yaml up -d --no-build
+   ```
+
+   This host-side ownership setup assumes Docker's local volume driver on a
+   filesystem that supports Unix ownership. Do not recursively change an
+   existing data volume; only the volume root and the three service directories
+   need UID/GID `10001:10001`.
+
    For a development machine building from source, use
    `docker compose -f compose.yaml up -d --build` instead.
 
