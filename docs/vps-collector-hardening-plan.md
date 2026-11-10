@@ -19,13 +19,13 @@
 - [ ] 评估 Binance REST aggTrades 按交易 ID补回；补回不完整时保留不可训练标记并丢弃该窗口。
 - [x] 深度流继续采用“断线、重新快照、重新桥接”的流程；任何桥接失败都让当前分片以 `sequence_gap` 隔离。
 - [x] relay index 明确暴露 `gap_count`、`disconnect_count`、停止原因、闭合状态和 `trainable` 状态，避免本地同步后才发现不可用。
-- [ ] 增加 VPS 端健康指标：连接数、重连数、缺口数、队列溢出、接收延迟和分片淘汰数。
+- [x] 增加 VPS 端健康指标：分片停止记录包含重连/缺口计数、队列高水位、最大帧间延迟、进程 CPU/RSS；`sequence_gap` 停止原因代表分片已隔离。
 
-relay 的 `/v1/captures` 条目现在包含 `capture_started_at_ns`、`capture_stopped_at_ns`、`gap_count`、`disconnect_count`、`stop_reason`、`closed` 和 `trainable`。同步产生的本地 archive 元数据会保留这些字段。
+relay 的 `/v1/captures` 条目现在包含 `capture_started_at_ns`、`capture_stopped_at_ns`、`gap_count`、`disconnect_count`、`stop_reason`、`closed`、`trainable`，以及可用时的 `process_user_cpu_seconds`、`process_system_cpu_seconds`、`process_rss_kib`、`receiver_queue_limit`、`receiver_queue_high_water`、`max_interframe_delay_ns`。同步产生的本地 archive 元数据会保留这些字段。
 
 ### Phase 2：性能基准
 
-- [ ] 在 VPS 上分别测量 WebSocket 接收、JSON 解析、SHA-256、JSONL 写盘、fsync 和 relay 压缩的 CPU、RSS、磁盘写入量。
+- [ ] 在 VPS 上分别测量 WebSocket 接收、JSON 解析、SHA-256、JSONL 写盘、fsync 和 relay 压缩的 CPU、RSS、磁盘写入量；分片停止记录先提供运行时 CPU/RSS/接收延迟证据。
 - [ ] 使用 VPS 真实运行窗口记录队列深度和 `receiver queue overflow`，不要只用离线文件吞吐推断瓶颈。
 - [ ] 以“无队列溢出、无因 CPU 饱和造成的接收延迟、RSS 不超过容器限制”为验收条件。
 

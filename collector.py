@@ -14,6 +14,7 @@ import http.client
 import io
 import json
 import os
+import resource
 import signal
 import ssl
 import time
@@ -58,6 +59,16 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: stream.read(64 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def process_rss_kib() -> int | None:
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1])
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 def compact_json(value: Any) -> bytes:
@@ -155,6 +166,12 @@ class CaptureFile:
         self.disconnects = 0
         self.previous_frame_wall_ns: int | None = None
         self.previous_frame_monotonic_ns: int | None = None
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        self.process_user_cpu_start = usage.ru_utime
+        self.process_system_cpu_start = usage.ru_stime
+        self.receiver_queue_limit: int | None = None
+        self.receiver_queue_high_water = 0
+        self.max_interframe_delay_ns = 0
         stamp = utc_stamp(now_ns())
         self.path = self.root / kind / symbol / f"{symbol}-{stamp}-{uuid.uuid4().hex}.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,6 +223,7 @@ class CaptureFile:
         if self.previous_frame_wall_ns is not None and self.previous_frame_monotonic_ns is not None:
             wall_delta = received_ns - self.previous_frame_wall_ns
             monotonic_delta = monotonic_ns - self.previous_frame_monotonic_ns
+            self.max_interframe_delay_ns = max(self.max_interframe_delay_ns, monotonic_delta)
             if wall_delta < 0 or monotonic_delta < 0 or abs(wall_delta - monotonic_delta) > 2_000_000_000:
                 self.record("clock_discontinuity", recorded_at_unix_ns=received_ns,
                             wall_delta_ns=wall_delta, monotonic_delta_ns=monotonic_delta)
@@ -225,9 +243,14 @@ class CaptureFile:
         self.gaps += 1
         self.record("gap_detected", detected_at_unix_ns=now_ns(), reason=reason, **fields)
 
+    def note_receiver_queue(self, depth: int, limit: int) -> None:
+        self.receiver_queue_limit = limit
+        self.receiver_queue_high_water = max(self.receiver_queue_high_water, depth)
+
     def close(self, reason: str) -> None:
         if self.file.closed:
             return
+        usage = resource.getrusage(resource.RUSAGE_SELF)
         self._write({
             "schema": "td_public_market_capture_record",
             "version": 1,
@@ -239,6 +262,16 @@ class CaptureFile:
             "gap_count": self.gaps,
             "disconnect_count": self.disconnects,
             "bytes_before_stop_record": self.bytes,
+            "process_user_cpu_seconds": round(
+                max(0.0, usage.ru_utime - self.process_user_cpu_start), 6
+            ),
+            "process_system_cpu_seconds": round(
+                max(0.0, usage.ru_stime - self.process_system_cpu_start), 6
+            ),
+            "process_rss_kib": process_rss_kib(),
+            "receiver_queue_limit": self.receiver_queue_limit,
+            "receiver_queue_high_water": self.receiver_queue_high_water,
+            "max_interframe_delay_ns": self.max_interframe_delay_ns,
         })
         os.fsync(self.file.fileno())
         self.file.close()
@@ -452,6 +485,7 @@ async def receive_depth_session(
         session_id = uuid.uuid4().hex
         capture.record("session_connected", recorded_at_unix_ns=now_ns(), session_id=session_id, url=url)
         queue: asyncio.Queue[tuple[int, int, str]] = asyncio.Queue(maxsize=QUEUE_LIMIT)
+        capture.note_receiver_queue(0, QUEUE_LIMIT)
         disconnected = asyncio.Event()
         receiver_error: list[BaseException] = []
 
@@ -462,7 +496,9 @@ async def receive_depth_session(
                     mono = time.monotonic_ns()
                     try:
                         queue.put_nowait((wall, mono, raw))
+                        capture.note_receiver_queue(queue.qsize(), QUEUE_LIMIT)
                     except asyncio.QueueFull as error:
+                        capture.note_receiver_queue(QUEUE_LIMIT, QUEUE_LIMIT)
                         receiver_error.append(error)
                         break
             except Exception as error:

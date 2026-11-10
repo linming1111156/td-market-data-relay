@@ -298,7 +298,7 @@ def capture_quality(path: Path) -> dict[str, object]:
         closed and gap_count == 0 and disconnect_count == 0
         and stop_reason in {"duration_elapsed", "sigterm"}
     )
-    return {
+    quality: dict[str, object] = {
         "capture_started_at_ns": started_ns,
         "capture_stopped_at_ns": stopped_ns,
         "gap_count": gap_count,
@@ -307,6 +307,19 @@ def capture_quality(path: Path) -> dict[str, object]:
         "closed": closed,
         "trainable": trainable,
     }
+    if stopped is not None:
+        for key in ("process_user_cpu_seconds", "process_system_cpu_seconds"):
+            value = stopped.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+                quality[key] = value
+        for key in ("process_rss_kib", "receiver_queue_limit", "receiver_queue_high_water"):
+            value = stopped.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                quality[key] = value
+        value = stopped.get("max_interframe_delay_ns")
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            quality["max_interframe_delay_ns"] = value
+    return quality
 
 
 def compress_old_captures() -> None:
@@ -515,9 +528,14 @@ def capture_entry(root: Path, path: Path) -> dict[str, object] | None:
         raw_sha = metadata.get("raw_sha256")
         quality = {key: metadata[key] for key in (
             "capture_started_at_ns", "capture_stopped_at_ns", "gap_count",
-            "disconnect_count", "stop_reason", "closed", "trainable")
+            "disconnect_count", "stop_reason", "closed", "trainable",
+            "process_user_cpu_seconds", "process_system_cpu_seconds",
+            "process_rss_kib", "receiver_queue_limit", "receiver_queue_high_water",
+            "max_interframe_delay_ns")
                    if key in metadata}
-        if len(quality) != 7:
+        if not all(key in quality for key in (
+                "capture_started_at_ns", "capture_stopped_at_ns", "gap_count",
+                "disconnect_count", "stop_reason", "closed", "trainable")):
             quality = capture_quality(path)
     else:
         file_sha = cached_sha256(path, st.st_mtime_ns, st.st_size)

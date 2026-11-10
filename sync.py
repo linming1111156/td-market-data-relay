@@ -141,7 +141,10 @@ def archive_metadata(target: Path, entry: dict, raw_size: int, relay_host: str,
         },
     }
     for key in ("capture_started_at_ns", "capture_stopped_at_ns", "gap_count",
-                "disconnect_count", "stop_reason", "closed", "trainable"):
+                "disconnect_count", "stop_reason", "closed", "trainable",
+                "process_user_cpu_seconds", "process_system_cpu_seconds",
+                "process_rss_kib", "receiver_queue_limit", "receiver_queue_high_water",
+                "max_interframe_delay_ns"):
         if key in entry:
             metadata[key] = entry[key]
     return metadata
