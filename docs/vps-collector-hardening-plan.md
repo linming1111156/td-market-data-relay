@@ -73,6 +73,8 @@ python3 scripts/summarize_capture_quality.py \\
 3. 深度重连后的快照桥接通过序列校验。
 4. 性能基准证明 Rust 改动带来实际收益后，才合入 Rust helper；否则保持 Python 实现。
 
+远端 relay 返回 HTTP 530、TLS EOF 或 tunnel 不可达时，属于 VPS/Cloudflare 可达性故障，不应被误判为采集器 CPU 瓶颈。`td-market-data-sync` 会保留 cursor 并重试；恢复可达后再以新分片的停止记录完成运行时验收。
+
 ## 部署说明
 
 本次改动只影响 collector 镜像和测试/文档，不影响正式 Gateway。发布镜像后，在 VPS 项目目录执行：
