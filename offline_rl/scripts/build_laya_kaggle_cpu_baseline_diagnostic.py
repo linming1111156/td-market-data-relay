@@ -16,7 +16,7 @@ DATASETS = [
 ]
 
 
-def notebook_source(project_version: str = "v40") -> str:
+def notebook_source(project_version: str = "v40", expected_relay_manifest_sha256: str | None = None) -> str:
     source_files = [
         ROOT / "offline_rl/scripts/laya_market_finetune.py",
         ROOT / "offline_rl/scripts/laya_market_continuous.py",
@@ -56,6 +56,9 @@ base=resolve_dataset('td-market-vps-captures')
 increment=resolve_dataset('td-market-vps-captures-increment-20261120')
 relay_manifest_path=increment/'relay-increment-manifest.json'
 relay_manifest_sha256=hashlib.sha256(relay_manifest_path.read_bytes()).hexdigest()
+expected_relay_manifest_sha256=__EXPECTED_RELAY_MANIFEST_SHA256__
+if expected_relay_manifest_sha256 and relay_manifest_sha256!=expected_relay_manifest_sha256:
+ raise RuntimeError('Relay increment manifest SHA-256 mismatch; stop before compilation or processing')
 relay_manifest=json.loads(relay_manifest_path.read_text(encoding='utf-8'))
 prepared=Path('/kaggle/working/laya-market-cpu-baseline-__VERSION__-prepare')
 eval_inputs=Path('/kaggle/working/laya-market-cpu-baseline-__VERSION__-inputs')
@@ -84,6 +87,7 @@ report=json.loads(baseline_path.read_text())
 manifest=prepared/'dataset'/'manifest.json'
 summary={'schema':'td_market_data_laya_cpu_baseline_run','version':1,'device':'cpu','gpu_enabled':False,
  'stages':stages,'peak_child_rss_kib':resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
+ 'expected_relay_increment_manifest_sha256':expected_relay_manifest_sha256,
  'relay_increment_manifest_sha256':relay_manifest_sha256,
  'relay_increment_counts':relay_manifest.get('counts'),
  'prepared_manifest_sha256':hashlib.sha256(manifest.read_bytes()).hexdigest(),
@@ -92,7 +96,8 @@ summary={'schema':'td_market_data_laya_cpu_baseline_run','version':1,'device':'c
 summary_path=Path('/kaggle/working/laya-market-cpu-baseline-__VERSION__-summary.json')
 summary_path.write_text(json.dumps(summary,ensure_ascii=False,sort_keys=True,indent=2)+'\n')
 print(json.dumps(summary,ensure_ascii=False,sort_keys=True,indent=2),flush=True)
-'''.replace("__FILES__", repr(encoded_files))
+'''.replace("__FILES__", repr(encoded_files)).replace(
+        "__EXPECTED_RELAY_MANIFEST_SHA256__", repr(expected_relay_manifest_sha256))
     return source.replace("__VERSION__", project_version)
 
 
@@ -100,6 +105,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--project-version", default="v40")
+    parser.add_argument("--expected-relay-manifest-sha256", default=None,
+                        help="fail before compilation if the mounted Relay manifest SHA-256 differs")
     args = parser.parse_args()
     slug = f"laya-market-cpu-baseline-diagnostic-{args.project_version}"
     title = f"Laya Market CPU Baseline Diagnostic {args.project_version}"
@@ -107,10 +114,11 @@ def main() -> int:
         "cells": [
             {"cell_type": "markdown", "id": "baseline-diagnostic-notes", "metadata": {}, "source":
              f"# Laya Market CPU Baseline Diagnostic {args.project_version}\n\n"
-             "Rust prepares the frozen Relay capture snapshot. This notebook then calculates fixed traditional baseline "
+             "Rust prepares the frozen Relay capture snapshot and verifies its manifest SHA-256 before compilation. "
+             "This notebook then calculates fixed traditional baseline "
              "metrics by real evaluation session without loading the Vega model. It does not train, tune, or promote a model.\n"},
             {"cell_type": "code", "id": "run-cpu-baselines", "execution_count": None,
-             "metadata": {}, "outputs": [], "source": notebook_source(args.project_version)},
+             "metadata": {}, "outputs": [], "source": notebook_source(args.project_version, args.expected_relay_manifest_sha256)},
         ],
         "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"}},
         "nbformat": 4,

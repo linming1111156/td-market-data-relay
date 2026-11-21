@@ -19,11 +19,15 @@ if summary.get('schema')!='td_market_data_laya_cpu_baseline_run' or summary.get(
  raise ValueError('CPU baseline summary schema/device mismatch')
 stages=summary.get('stages') or []
 if not stages or any(stage.get('return_code')!=0 for stage in stages): raise ValueError('CPU diagnostic stage did not succeed')
+expected_manifest=summary.get('expected_relay_increment_manifest_sha256')
+actual_manifest=summary.get('relay_increment_manifest_sha256')
+if expected_manifest and actual_manifest!=expected_manifest: raise ValueError('Relay manifest SHA-256 did not match the frozen input')
 report=summary.get('baseline_report') or {{}}
 if not report: raise ValueError('baseline report missing')
 audit={{'schema':'td_market_data_laya_cpu_baseline_audit','version':1,
  'state':'audited','source_summary':str(paths[0]),
  'source_summary_sha256':hashlib.sha256(paths[0].read_bytes()).hexdigest(),
+ 'expected_relay_increment_manifest_sha256':summary.get('expected_relay_increment_manifest_sha256'),
  'relay_increment_manifest_sha256':summary.get('relay_increment_manifest_sha256'),
  'relay_increment_counts':summary.get('relay_increment_counts'),
  'prepared_manifest_sha256':summary.get('prepared_manifest_sha256'),
