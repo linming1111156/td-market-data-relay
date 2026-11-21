@@ -74,7 +74,7 @@ def notebook_source(round_id: str = ROUND_ID, project_version: str = "v32",
     source = replace_once(
         source,
         "ROUND_ID='v31-historical-replay-v24-utcday-v1'; HORIZON_MS=15*60_000; MIN_TRAIN=100; MIN_HELDOUT=30\n",
-        f"ROUND_ID={round_id!r}; HORIZON_MS=15*60_000; MIN_TRAIN=100; MIN_HELDOUT=30\n",
+        "ROUND_ID='__ROUND_ID__'; HORIZON_MS=15*60_000; MIN_TRAIN=100; MIN_HELDOUT=30\n",
     )
     source = replace_once(
         source,
@@ -292,6 +292,7 @@ run_files=[]
             raise RuntimeError(f"expected one phase anchor, found {source.count(anchor)}: {anchor!r}")
         source = source.replace(anchor, f"phase={phase!r}\n" + anchor, 1)
     source = source.replace("v32", project_version)
+    source = source.replace("'__ROUND_ID__'", repr(round_id))
     wrapper = '''import json, traceback
 from pathlib import Path
 
