@@ -12,8 +12,7 @@ def notebook_source(project_version: str, source_kernel: str) -> str:
 from pathlib import Path
 INPUT=Path('/kaggle/input')
 name='laya-market-cpu-baseline-{project_version}-summary.json'
-mounted=[root for root in INPUT.iterdir() if {source_kernel.split('/')[-1]!r} in root.name]
-paths=[path for root in mounted for path in root.rglob(name)]
+paths=[path for path in INPUT.rglob(name)]
 if len(paths)!=1: raise FileNotFoundError(f'expected one {{name}}, found {{len(paths)}}')
 summary=json.loads(paths[0].read_text(encoding='utf-8'))
 if summary.get('schema')!='td_market_data_laya_cpu_baseline_run' or summary.get('device')!='cpu' or summary.get('gpu_enabled') is not False:
