@@ -17,10 +17,19 @@ files=[p for root in Path('/kaggle/input').iterdir() for p in root.rglob(prefix+
 if len(files)!=1: raise FileNotFoundError(f'expected one matrix report, found {{len(files)}}')
 report=json.loads(files[0].read_text(encoding='utf-8'))
 if report.get('schema')!='td_market_data_laya_label_sensitivity' or report.get('state')!='complete': raise ValueError('matrix schema/state mismatch')
+expected_sha=report.get('expected_relay_manifest_sha256')
+actual_sha=report.get('relay_increment_manifest_sha256')
+if expected_sha and actual_sha!=expected_sha: raise ValueError('Relay manifest SHA-256 mismatch')
 matrix=report.get('matrix') or []
 expected={{(h,e) for h in (5,15,30) for e in (0,10,30)}}
 observed={{(row.get('horizon_minutes'),int(row.get('additional_edge_bps_round_trip',-1))) for row in matrix}}
-if observed!=expected: raise ValueError(f'matrix shape mismatch: {{sorted(observed)}}')
+if len(matrix)!=9 or observed!=expected: raise ValueError(f'matrix shape mismatch: {{sorted(observed)}}')
+for row in matrix:
+ count=int(row.get('skipped_candidate_records_count') or 0)
+ reasons=row.get('skipped_candidate_reason_counts') or {{}}
+ if row.get('candidate_record_schema_ok') is not True: raise ValueError('candidate skip record schema failed')
+ if count!=sum(int(value) for value in reasons.values()): raise ValueError('candidate skip count/reason mismatch')
+ if reasons!={{k:int(v) for k,v in (row.get('skipped_candidates') or {{}}).items()}}: raise ValueError('candidate skip reasons differ from aggregates')
 flat_train=sum(int(row['train_label_counts'].get('flat',0)) for row in matrix)
 long_train=sum(int(row['train_label_counts'].get('long',0)) for row in matrix)
 short_train=sum(int(row['train_label_counts'].get('short',0)) for row in matrix)
@@ -35,7 +44,7 @@ index={{'schema':'td_market_data_laya_label_sensitivity_index_v1','state':'pass'
  'train_label_totals':{{'flat':flat_train,'long':long_train,'short':short_train}},
  'evaluation_label_totals_descriptive_only':{{'flat':flat_eval,'long':long_eval,'short':short_eval}},
  'skip_record_total':total_skips,'selection_rule':report.get('selection_rule'),
- 'configurations':[{{key:row.get(key) for key in ('horizon_minutes','additional_edge_bps_round_trip','train_rows','evaluation_rows','train_label_counts','evaluation_label_counts','skipped_candidates','skipped_candidate_records_count','skipped_candidate_reason_counts','elapsed_seconds','candidate_schema_ok')}} for row in matrix]}}
+ 'configurations':[{{key:row.get(key) for key in ('horizon_minutes','additional_edge_bps_round_trip','train_rows','evaluation_rows','train_label_counts','evaluation_label_counts','skipped_candidates','skipped_candidate_records_count','skipped_candidate_reason_counts','elapsed_seconds','candidate_record_schema_ok')}} for row in matrix]}}
 clean=lambda value:re.sub(r'[^A-Za-z0-9.+-]+','_',str(value))[:50]
 sha=(index.get('relay_increment_manifest_sha256') or 'none')[:8]
 name=(f"INDEX-pass-sha{{sha}}-configs{{len(matrix)}}-prep{{clean(index['total_prepare_seconds'])}}s-"
