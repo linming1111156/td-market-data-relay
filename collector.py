@@ -75,6 +75,41 @@ def compact_json(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode()
 
 
+def funding_api_error_details(error: Exception, proxy_mode: str) -> dict[str, Any]:
+    """Return bounded, credential-free diagnostics for a failed funding poll."""
+    details: dict[str, Any] = {
+        "error_class": type(error).__name__,
+        "network_proxy_mode": proxy_mode,
+        "request_host": "fapi.binance.com",
+    }
+    if isinstance(error, urllib.error.HTTPError):
+        details.update({"error_category": "http_response", "http_status": int(error.code),
+                        "http_reason": str(error.reason)[:160]})
+        headers = error.headers
+        safe_headers = {}
+        for name in ("server", "via", "cf-ray", "cf-cache-status", "retry-after",
+                     "content-type", "x-mbx-used-weight-1m"):
+            value = headers.get(name) if headers is not None else None
+            if value:
+                safe_headers[name] = str(value)[:200]
+        details["response_headers"] = safe_headers
+    elif isinstance(error, urllib.error.URLError):
+        reason = error.reason
+        details.update({"error_category": "url_transport",
+                        "transport_reason_class": type(reason).__name__,
+                        "transport_reason": str(reason)[:200]})
+    elif isinstance(error, (TimeoutError, asyncio.TimeoutError)):
+        details["error_category"] = "timeout"
+    elif isinstance(error, (json.JSONDecodeError, UnicodeDecodeError)):
+        details["error_category"] = "response_parse"
+    elif isinstance(error, ValueError):
+        details["error_category"] = "response_validation"
+    else:
+        details["error_category"] = "collector_error"
+    details["error"] = str(error)[:512]
+    return details
+
+
 def configured_socks5_proxy() -> str | None:
     proxy_url = os.environ.get(SOCKS5_PROXY_ENV, "").strip()
     if not proxy_url:
@@ -164,6 +199,9 @@ class CaptureFile:
         self.observations = 0
         self.gaps = 0
         self.disconnects = 0
+        self.gap_reason_counts: dict[str, int] = {}
+        self.error_class_counts: dict[str, int] = {}
+        self.http_status_counts: dict[str, int] = {}
         self.previous_frame_wall_ns: int | None = None
         self.previous_frame_monotonic_ns: int | None = None
         usage = resource.getrusage(resource.RUSAGE_SELF)
@@ -177,6 +215,8 @@ class CaptureFile:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.file = self.path.open("xb", buffering=0)
         fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        proxy_url = configured_socks5_proxy()
+        self.network_proxy_mode = urllib.parse.urlsplit(proxy_url).scheme if proxy_url else "system_default"
         self._write({
             "schema": "td_public_market_capture_record",
             "version": 1,
@@ -191,10 +231,7 @@ class CaptureFile:
             "source_revision": source_revision,
             "collector_executable_path": str(Path(__file__).resolve()),
             "collector_executable_sha256": sha256_file(Path(__file__).resolve()),
-            "network_proxy_mode": (
-                urllib.parse.urlsplit(proxy_url).scheme
-                if (proxy_url := configured_socks5_proxy()) else "system_default"
-            ),
+            "network_proxy_mode": self.network_proxy_mode,
             "max_gap_ms": max_gap_ms,
             "max_output_bytes": max_bytes,
         }, reserve=4096)
@@ -241,7 +278,21 @@ class CaptureFile:
 
     def gap(self, reason: str, **fields: Any) -> None:
         self.gaps += 1
+        self.gap_reason_counts[reason] = self.gap_reason_counts.get(reason, 0) + 1
         self.record("gap_detected", detected_at_unix_ns=now_ns(), reason=reason, **fields)
+
+    def record_funding_api_error(self, error: Exception, request_start_time_ms: int) -> None:
+        details = funding_api_error_details(error, self.network_proxy_mode)
+        error_class = str(details["error_class"])
+        self.error_class_counts[error_class] = self.error_class_counts.get(error_class, 0) + 1
+        status = details.get("http_status")
+        if isinstance(status, int):
+            key = str(status)
+            self.http_status_counts[key] = self.http_status_counts.get(key, 0) + 1
+        self.gap("finalized_funding_api_poll_failed", request_start_time_ms=request_start_time_ms,
+                 **details)
+        self.record("funding_api_error", recorded_at_unix_ns=now_ns(),
+                    request_start_time_ms=request_start_time_ms, **details)
 
     def note_receiver_queue(self, depth: int, limit: int) -> None:
         self.receiver_queue_limit = limit
@@ -261,6 +312,9 @@ class CaptureFile:
             "observation_count": self.observations,
             "gap_count": self.gaps,
             "disconnect_count": self.disconnects,
+            "gap_reason_counts": self.gap_reason_counts,
+            "error_class_counts": self.error_class_counts,
+            "http_status_counts": self.http_status_counts,
             "bytes_before_stop_record": self.bytes,
             "process_user_cpu_seconds": round(
                 max(0.0, usage.ru_utime - self.process_user_cpu_start), 6
@@ -427,11 +481,7 @@ async def run_finalized_funding_capture(args: argparse.Namespace, shutdown: asyn
                         cursor_start_ms = last_funding_time_ms + 1
                     next_poll = time.monotonic() + args.poll_seconds
                 except Exception as error:
-                    capture.gap("finalized_funding_api_poll_failed", request_start_time_ms=cursor_start_ms,
-                                error=f"{type(error).__name__}: {error}")
-                    capture.record("funding_api_error", recorded_at_unix_ns=received_ns,
-                                   request_start_time_ms=cursor_start_ms,
-                                   error=f"{type(error).__name__}: {error}")
+                    capture.record_funding_api_error(error, cursor_start_ms)
                     next_poll = time.monotonic() + min(args.poll_seconds, 30)
             if shutdown.is_set():
                 stop_reason = "sigterm"

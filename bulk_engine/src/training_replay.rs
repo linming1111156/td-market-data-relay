@@ -225,9 +225,7 @@ fn feasible_action_mask(mark: Option<f64>, position: i64, request: &Request) -> 
         return 0b010;
     };
     let notional = request.lot_size_btc * price;
-    if notional >= request.minimum_notional_usdt
-        && notional <= request.entry_notional_cap_usdt
-    {
+    if notional >= request.minimum_notional_usdt && notional <= request.entry_notional_cap_usdt {
         0b111
     } else {
         0b010
@@ -246,33 +244,65 @@ fn choose(state: &[f64], action_mask: u8, request: &Request, rng: &mut u64) -> R
             {
                 return Err("linear policy dimensions do not match selected factors".into());
             }
-            request.weights.iter().zip(&request.bias).map(|(row, bias)| {
-                row.iter().zip(state).fold(*bias, |sum, (weight, input)| sum + weight * input)
-            }).collect::<Vec<_>>()
+            request
+                .weights
+                .iter()
+                .zip(&request.bias)
+                .map(|(row, bias)| {
+                    row.iter()
+                        .zip(state)
+                        .fold(*bias, |sum, (weight, input)| sum + weight * input)
+                })
+                .collect::<Vec<_>>()
         }
         "mlp_tanh8" => {
             if request.hidden_weights.len() != 8
                 || request.hidden_bias.len() != 8
-                || request.hidden_weights.iter().any(|row| row.len() != state.len())
+                || request
+                    .hidden_weights
+                    .iter()
+                    .any(|row| row.len() != state.len())
                 || request.weights.len() != 3
                 || request.weights.iter().any(|row| row.len() != 8)
                 || request.bias.len() != 3
             {
                 return Err("MLP policy dimensions do not match selected factors".into());
             }
-            let hidden: Vec<f64> = request.hidden_weights.iter().zip(&request.hidden_bias)
-                .map(|(row, bias)| row.iter().zip(state)
-                    .fold(*bias, |sum, (weight, input)| sum + weight * input).tanh())
+            let hidden: Vec<f64> = request
+                .hidden_weights
+                .iter()
+                .zip(&request.hidden_bias)
+                .map(|(row, bias)| {
+                    row.iter()
+                        .zip(state)
+                        .fold(*bias, |sum, (weight, input)| sum + weight * input)
+                        .tanh()
+                })
                 .collect();
-            request.weights.iter().zip(&request.bias).map(|(row, bias)| {
-                row.iter().zip(&hidden).fold(*bias, |sum, (weight, input)| sum + weight * input)
-            }).collect()
+            request
+                .weights
+                .iter()
+                .zip(&request.bias)
+                .map(|(row, bias)| {
+                    row.iter()
+                        .zip(&hidden)
+                        .fold(*bias, |sum, (weight, input)| sum + weight * input)
+                })
+                .collect()
         }
         _ => return Err("unsupported policy architecture".into()),
     };
-    let masked: Vec<f64> = logits.iter().enumerate().map(|(index, value)| {
-        if action_mask & (1 << index) != 0 { *value } else { f64::NEG_INFINITY }
-    }).collect();
+    let masked: Vec<f64> = logits
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            if action_mask & (1 << index) != 0 {
+                *value
+            } else {
+                f64::NEG_INFINITY
+            }
+        })
+        .collect();
     let maximum = masked.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let probabilities: Vec<f64> = masked.iter().map(|value| (value - maximum).exp()).collect();
     let total: f64 = probabilities.iter().sum();
@@ -468,9 +498,8 @@ fn run_window(
         if filled != 0 {
             if position_before_fill != 0 {
                 if let (Some(reference), Some(execution)) = (mark, price) {
-                    let fill_interval_pnl = position_before_fill as f64
-                        * LOT_BTC
-                        * (execution - reference);
+                    let fill_interval_pnl =
+                        position_before_fill as f64 * LOT_BTC * (execution - reference);
                     equity += fill_interval_pnl;
                     pending_reward += fill_interval_pnl;
                     stats.gross_price_pnl_usdt += fill_interval_pnl;
@@ -524,10 +553,18 @@ fn run_window(
         stats.decisions += 1;
     }
     if position != 0 {
-        let (execution, volume) = last_execution
-            .ok_or_else(|| format!("window {} has an open terminal position without an in-window execution VWAP", window.id))?;
-        let reference = previous_mark
-            .ok_or_else(|| format!("window {} has an open terminal position without a prior mark", window.id))?;
+        let (execution, volume) = last_execution.ok_or_else(|| {
+            format!(
+                "window {} has an open terminal position without an in-window execution VWAP",
+                window.id
+            )
+        })?;
+        let reference = previous_mark.ok_or_else(|| {
+            format!(
+                "window {} has an open terminal position without a prior mark",
+                window.id
+            )
+        })?;
         let terminal_pnl = position as f64 * LOT_BTC * (execution - reference);
         equity += terminal_pnl;
         pending_reward += terminal_pnl;
@@ -547,7 +584,10 @@ fn run_window(
             request.slippage_bps,
         )?;
         if after != 0 || filled != -position_before_close {
-            return Err(format!("window {} could not fully liquidate its terminal position", window.id));
+            return Err(format!(
+                "window {} could not fully liquidate its terminal position",
+                window.id
+            ));
         }
         position = after;
         let notional = (filled as f64 * LOT_BTC * execution).abs();
@@ -662,8 +702,10 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         || request.means.len() != request.scales.len()
         || request.scales.iter().any(|x| !x.is_finite() || *x <= 0.0)
         || request.means.iter().any(|x| !x.is_finite())
-        || !request.lot_size_btc.is_finite() || request.lot_size_btc <= 0.0
-        || !request.minimum_notional_usdt.is_finite() || request.minimum_notional_usdt < 0.0
+        || !request.lot_size_btc.is_finite()
+        || request.lot_size_btc <= 0.0
+        || !request.minimum_notional_usdt.is_finite()
+        || request.minimum_notional_usdt < 0.0
         || !request.entry_notional_cap_usdt.is_finite()
         || request.entry_notional_cap_usdt < request.minimum_notional_usdt
         || !request.fee_bps.is_finite()

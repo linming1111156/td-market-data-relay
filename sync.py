@@ -146,7 +146,8 @@ def archive_metadata(target: Path, entry: dict, raw_size: int, relay_host: str,
                 "process_user_cpu_seconds", "process_system_cpu_seconds",
                 "process_rss_kib", "receiver_queue_limit", "receiver_queue_high_water",
                 "max_interframe_delay_ns", "source_revision",
-                "collector_executable_sha256", "network_proxy_mode"):
+                "collector_executable_sha256", "network_proxy_mode",
+                "gap_reason_counts", "error_class_counts", "http_status_counts"):
         if key in entry:
             metadata[key] = entry[key]
     return metadata

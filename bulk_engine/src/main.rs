@@ -9,7 +9,11 @@ use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
 mod archive_verify;
+mod laya_prepare;
+mod laya_relabel;
+mod ohlcv_diagnostic;
 mod replay_cache;
+mod relay_event_audit;
 mod training_replay;
 
 const MINUTE_MS: i64 = 60_000;
@@ -1174,9 +1178,13 @@ fn run() -> Result<(), String> {
         Some("derive-features") => run_features(args),
         Some("training-replay") => training_replay::run(args),
         Some("training-prepare") => replay_cache::run(args),
+        Some("laya-prepare") => laya_prepare::run(args),
+        Some("laya-relabel") => laya_relabel::run(args),
+        Some("ohlcv-diagnostic") => ohlcv_diagnostic::run(args),
         Some("verify-archives") => archive_verify::run(args),
+        Some("relay-event-audit") => relay_event_audit::run(args),
         _ => Err(
-            "usage: engine process|derive-features|training-replay|training-prepare|verify-archives [OPTIONS]"
+            "usage: engine process|derive-features|training-replay|training-prepare|laya-prepare|laya-relabel|ohlcv-diagnostic|verify-archives|relay-event-audit [OPTIONS]"
                 .into(),
         ),
     }

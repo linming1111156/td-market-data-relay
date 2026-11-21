@@ -241,6 +241,17 @@ def _capture_quality_record(raw: bytes) -> dict[str, object]:
     return row
 
 
+def _quality_counter_map(value: object, name: str) -> dict[str, int] | None:
+    if value is None:
+        return None
+    if (not isinstance(value, dict)
+            or any(not isinstance(key, str) or not key
+                   or not isinstance(count, int) or isinstance(count, bool) or count < 0
+                   for key, count in value.items())):
+        raise OSError(f"capture quality {name} is invalid")
+    return value
+
+
 def capture_quality(path: Path) -> dict[str, object]:
     """Read lifecycle quality without parsing every market frame.
 
@@ -312,6 +323,10 @@ def capture_quality(path: Path) -> dict[str, object]:
         if isinstance(value, str) and value:
             quality[key] = value
     if stopped is not None:
+        for key in ("gap_reason_counts", "error_class_counts", "http_status_counts"):
+            value = _quality_counter_map(stopped.get(key), key)
+            if value is not None:
+                quality[key] = value
         for key in ("process_user_cpu_seconds", "process_system_cpu_seconds"):
             value = stopped.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
@@ -536,7 +551,8 @@ def capture_entry(root: Path, path: Path) -> dict[str, object] | None:
             "process_user_cpu_seconds", "process_system_cpu_seconds",
             "process_rss_kib", "receiver_queue_limit", "receiver_queue_high_water",
             "max_interframe_delay_ns", "source_revision",
-            "collector_executable_sha256", "network_proxy_mode")
+            "collector_executable_sha256", "network_proxy_mode",
+            "gap_reason_counts", "error_class_counts", "http_status_counts")
                    if key in metadata}
         if not all(key in quality for key in (
                 "capture_started_at_ns", "capture_stopped_at_ns", "gap_count",

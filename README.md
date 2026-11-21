@@ -476,6 +476,17 @@ TD_RELAY_API_KEY='your-private-key' python3 sync.py \
   --output /data/td-market-data-recovered
 ```
 
+To run a one-time sync directly into the local compressed archive, use
+`scripts/sync_vps_zstd_to_local.sh`. It reads the relay URL and API key from
+`/etc/td-market-data-relay/sync.env` and writes to the project `archive/`
+directory by default, with sync state in `state/`. Set `SYNC_ROOT`,
+`SYNC_ENV_FILE`, or `PYTHON_BIN` to override those locations; additional
+`sync.py` options can be passed through, for example:
+
+```sh
+scripts/sync_vps_zstd_to_local.sh --stream usdm-aggtrades --symbol BTCUSDT
+```
+
 It verifies an existing hot file against the remote raw-data hash before
 skipping it. A different local file with the same capture name is reported and
 left untouched. When `--archive-root` is provided, the worker also checks the

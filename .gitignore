@@ -7,6 +7,8 @@ __pycache__/
 !.env.example
 secrets/
 data/
+/archive/
+/state/
 *.jsonl
 *.zst
 bulk_engine/target/

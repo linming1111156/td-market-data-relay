@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 from pathlib import Path
 
@@ -82,8 +83,21 @@ def main() -> None:
         "total_process_system_cpu_seconds": round(
             sum(float(row["process_system_cpu_seconds"]) for row in runtime_complete), 6
         ),
+        "gap_reason_counts": dict(sorted(sum_counters(captures, "gap_reason_counts").items())),
+        "error_class_counts": dict(sorted(sum_counters(captures, "error_class_counts").items())),
+        "http_status_counts": dict(sorted(sum_counters(captures, "http_status_counts").items())),
     }
     print(json.dumps(summary, indent=2, sort_keys=True))
+
+
+def sum_counters(captures: list[tuple[Path, dict]], field: str) -> Counter:
+    total = Counter()
+    for _, metadata in captures:
+        values = metadata.get(field)
+        if isinstance(values, dict):
+            total.update({str(key): int(value) for key, value in values.items()
+                          if isinstance(value, int) and not isinstance(value, bool) and value >= 0})
+    return total
 
 
 if __name__ == "__main__":

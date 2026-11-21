@@ -1,13 +1,13 @@
 //! Bounded, parallel integrity verification for local zstd capture archives.
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -164,6 +164,8 @@ fn verify_archive(path: &Path) -> Result<(), String> {
 
 pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     let mut root = None;
+    let mut report_path = None;
+    let mut allow_invalid = false;
     let mut workers = std::thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(2)
@@ -181,6 +183,8 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
                     return Err("--workers must be between 1 and 32".into());
                 }
             }
+            "--report-json" => report_path = args.next().map(PathBuf::from),
+            "--allow-invalid" => allow_invalid = true,
             other => return Err(format!("unknown verify-archives option: {other}")),
         }
     }
@@ -205,7 +209,8 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
 
     let next = AtomicUsize::new(0);
     let finished = AtomicUsize::new(0);
-    let issues = Mutex::new(Vec::<String>::new());
+    let issues = Mutex::new(Vec::<Value>::new());
+    let root_path = root.as_path();
     println!(
         "verifying {} archives with {workers} Rust workers",
         paths.len()
@@ -216,15 +221,26 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             let next = &next;
             let finished = &finished;
             let issues = &issues;
-            scope.spawn(move || loop {
-                let index = next.fetch_add(1, Ordering::Relaxed);
-                if index >= paths.len() {
-                    break;
+            scope.spawn(move || {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= paths.len() {
+                        break;
+                    }
+                    if let Err(error) = verify_archive(&paths[index]) {
+                        let relative = paths[index]
+                            .strip_prefix(root_path)
+                            .unwrap_or(&paths[index])
+                            .to_string_lossy()
+                            .into_owned();
+                        issues.lock().unwrap().push(json!({
+                            "path": relative,
+                            "record_validity": "invalid",
+                            "validity_reasons": [error],
+                        }));
+                    }
+                    finished.fetch_add(1, Ordering::Release);
                 }
-                if let Err(error) = verify_archive(&paths[index]) {
-                    issues.lock().unwrap().push(error);
-                }
-                finished.fetch_add(1, Ordering::Release);
             });
         }
         let mut reported = 0;
@@ -240,19 +256,24 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     let issues = issues
         .into_inner()
         .map_err(|_| "verification result lock poisoned".to_string())?;
-    if !issues.is_empty() {
-        for issue in issues.iter().take(50) {
-            eprintln!("INVALID: {issue}");
-        }
-        return Err(format!(
-            "{} of {} archives failed verification",
-            issues.len(),
-            paths.len()
-        ));
+    let invalid_count = issues.len();
+    let valid_count = paths.len().saturating_sub(invalid_count);
+    let report = json!({
+        "schema": "td_market_data_archive_integrity_audit_v1",
+        "archive_count": paths.len(),
+        "valid_count": valid_count,
+        "invalid_count": invalid_count,
+        "invalid_archives": issues,
+    });
+    if let Some(path) = report_path {
+        let bytes = serde_json::to_vec_pretty(&report)
+            .map_err(|error| format!("serialize archive audit report: {error}"))?;
+        fs::write(&path, bytes)
+            .map_err(|error| format!("write archive audit report {}: {error}", path.display()))?;
     }
-    println!(
-        "verified {} archives: compressed/raw SHA-256, sizes, JSONL, final capture_stopped",
-        paths.len()
-    );
+    println!("{}", report);
+    if invalid_count > 0 && !allow_invalid {
+        return Err(format!("{} of {} archives failed verification", invalid_count, paths.len()));
+    }
     Ok(())
 }
