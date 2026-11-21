@@ -52,6 +52,7 @@ for name,path in [('paper-trade-decisions.jsonl',decisions),('quality-events.jso
 validity=Counter(); maturity=Counter(); simulation=Counter(); strategy_outcomes={}; round_metrics={}; seen=set(); duplicate_ids=0; malformed=0
 missing_reasons=0; bad_outcomes=0; loss_outcomes_retained=0; strategy_validity_mismatch=0; rows=0
 market_context_present=0; market_context_missing=0; market_context_malformed=0
+market_context_imbalance_mismatches=0
 funding_rate_available=0; funding_time_available=0; trade_flow_available=0
 allowed_validity={'valid','invalid','unresolved'}; allowed_outcomes={'profitable','loss-making','flat'}
 for line_no,line in enumerate(decisions.open(encoding='utf-8'),1):
@@ -82,6 +83,17 @@ for line_no,line in enumerate(decisions.open(encoding='utf-8'),1):
     market_context_malformed+=1
    if any(not isinstance(flow.get(key),int) or flow.get(key)<0 for key in ('event_count_1m','event_count_5m')):
     market_context_malformed+=1
+   features=row.get('features') or {}
+   for width in ('1m','5m'):
+    buy=flow.get('buy_volume_'+width); sell=flow.get('sell_volume_'+width)
+    actual=features.get('aggtrade_signed_volume_imbalance_'+width) if isinstance(features,dict) else None
+    if (not isinstance(buy,(int,float)) or not isinstance(sell,(int,float))
+        or not isinstance(actual,(int,float)) or not math.isfinite(float(actual))):
+     market_context_imbalance_mismatches+=1
+    else:
+     expected=(float(buy)-float(sell))/(float(buy)+float(sell)) if float(buy)+float(sell)>0 else 0.0
+     if not math.isclose(float(actual),expected,rel_tol=0.0,abs_tol=3e-6):
+      market_context_imbalance_mismatches+=1
    rate=funding.get('rate')
    if rate is not None:
     if not isinstance(rate,(int,float)) or not math.isfinite(float(rate)):
@@ -176,6 +188,9 @@ for event in v38_expansion:
   and event.get('is_increment_specific') is False
   and bool(reasons))
 manifest_counts=manifest.get('counts') or {}
+new_round_counts=manifest.get('new_round_counts') or {}
+new_round_context_present=new_round_counts.get('market_context_present_rows')
+new_round_rows=new_round_counts.get('source_decision_rows')
 fold_days=[item.get('utc_day') for item in (manifest.get('folds') or []) if item.get('utc_day')]
 unique_fold_days=manifest.get('unique_eligible_utc_day_folds')
 new_unique_fold_days=manifest.get('new_unique_eligible_utc_day_folds')
@@ -191,6 +206,10 @@ checks={
  'decision_file_hash_matches_manifest':file_audit['paper-trade-decisions.jsonl']['matches_manifest'],
  'quality_file_hash_matches_manifest':file_audit['quality-events.jsonl']['matches_manifest'],
  'market_context_schema_and_fields_valid':market_context_malformed==0,
+ 'market_context_trade_flow_matches_fixed_features':market_context_imbalance_mismatches==0,
+ 'market_context_complete_for_new_round':(
+  new_round_context_present==new_round_rows
+  if isinstance(new_round_context_present,int) and isinstance(new_round_rows,int) else None),
  'market_context_counts_match_manifest':(
   market_context_present==manifest_counts.get('market_context_present_rows')
   and market_context_missing==manifest_counts.get('market_context_missing_rows')
@@ -230,6 +249,8 @@ report={
  'market_context':{'present_rows':market_context_present,'missing_rows':market_context_missing,
   'malformed_rows':market_context_malformed,'funding_rate_available_rows':funding_rate_available,
   'funding_time_available_rows':funding_time_available,'trade_flow_available_rows':trade_flow_available,
+  'trade_flow_feature_imbalance_mismatches':market_context_imbalance_mismatches,
+  'new_round_present_rows':new_round_context_present,'new_round_decision_rows':new_round_rows,
   'schema':'td_market_data_laya_point_in_time_context_v1'},
  'v38_candidate_expansion':{'event_rows':len(v38_expansion),'reason_counts':dict(sorted(v38_reasons.items())),'unique_event_ids':len(set(v38_ids))},
  'simulation_status':dict(sorted(simulation.items())),
@@ -239,6 +260,7 @@ report={
   'malformed_quality_events':quality_malformed,'invalid_quality_events_missing_reason':quality_missing_reasons,
   'invalid_rows_missing_reason':missing_reasons,'unknown_strategy_outcome_rows':bad_outcomes,
   'market_context_malformed_rows':market_context_malformed,
+  'market_context_trade_flow_feature_imbalance_mismatches':market_context_imbalance_mismatches,
   'loss_outcomes_retained':loss_outcomes_retained,
   'strategy_validity_mismatch_rows':strategy_validity_mismatch,
   'candidate_skip_events':quality_candidate_rows,

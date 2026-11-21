@@ -121,8 +121,8 @@ for archive in archive_paths:
   if not meta.get('capture_id'): reasons.append('missing_capture_id')
   else: capture_ids[str(meta['capture_id'])]+=1
   if meta.get('closed') is False: reasons.append('capture_not_closed')
- if meta.get('capture_id') in query_ids:
-  relay_entry=next((item for item in query_entries if str(item.get('capture_id'))==str(meta.get('capture_id'))),None)
+  if meta.get('capture_id') in query_ids:
+   relay_entry=next((item for item in query_entries if str(item.get('capture_id'))==str(meta.get('capture_id'))),None)
    if relay_entry and relay_entry.get('raw_sha256')!=meta.get('raw_sha256'): reasons.append('relay_sidecar_raw_hash_mismatch')
  except (OSError,ValueError,TypeError) as error:
   reasons.append('sidecar_parse_error:'+type(error).__name__)
