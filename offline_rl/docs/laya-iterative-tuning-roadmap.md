@@ -2,14 +2,14 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
-## 当前进度（2026-11-22 19:51 UTC）
+## 当前进度（2026-11-22 19:53 UTC）
 
 - 当前待运行轮次：v50，RLCD 与 soft-ce 两个 GPU 分支。
-- Kaggle 官方额度查询（2026-11-22 19:51 UTC）：已用 1.96h，剩余 28.04/30h；刷新时间为 2026-11-28 00:00 UTC。
+- Kaggle 官方额度查询（2026-11-22 19:53 UTC）：已用 1.98h，剩余 28.02/30h；刷新时间为 2026-11-28 00:00 UTC。
 - 旧 run `372620204` 在 Relay manifest SHA 校验处退出，没有开始数据准备或微调。原因是 notebook version 2 固定了 Relay version 50 的 SHA，但实际挂载的是 version 51；这条硬性 SHA 比对已从 v50 生成器移除，运行仍会记录实际 SHA。
 - 早先的 Kaggle 交互会话只读摘要曾记录 846 训练行、204 评估行、Tesla T4，以及 RLCD/soft-ce 两支 `complete`（各 0.035250/0.033591 GPU 小时）；这是那次会话的历史证据，不能视为当前 Draft Session 的文件可用性证明。
-- 2026-11-22 19:51 UTC 重新检查后，账号已登录。Kaggle 活动面板的 `Interactive Session with GPU T4 x2` 仍运行约 1 小时；保存版 v3 已取消，避免排队版本与交互会话重复消耗额度。官方 CLI 的 kernel 状态为 `CANCEL_ACKNOWLEDGED`，日志为空。GPU quota 为已用 1.96h、剩余 28.04h。面板 Output 区列出 3.2 GiB 旧产物，但当前 Draft Session 的 summary 读取报 `FileNotFoundError`，不能把旧 Output 面板当作当前运行目录。
-- 当前 Draft Session 的训练单元执行到数据准备前即退出：`laya_market_finetune.py` 报 `output must be a new directory outside the repository`。检查指出原因是 `/kaggle/working/laya-market-gpu-loss-ablation-v50-prepared` 已存在；不是 CUDA 错误，本次未发生模型微调。为保留旧目录和 checkpoint，生成器已改用全新的 `retry1-prepared` 与 `retry1-{loss}` 输出目录；下一步用新鲜 quota 值通过官方 CLI 提交修复版 GPU kernel。
+- 2026-11-22 19:53 UTC 的账号活动面板仍显示 `Interactive Session with GPU T4 x2` 运行约 1 小时；保存版 v3 已取消。官方 CLI 已提交修复版 v4，状态为 `QUEUED`，logs 为空。GPU quota 为已用 1.98h、剩余 28.02h。活动面板 Output 区仍列出 3.2 GiB 旧产物；当前 Draft Session 不能读取这些文件，不能把旧 Output 面板当作当前运行目录。
+- 旧 Draft Session 的训练单元在数据准备时因 `/kaggle/working/laya-market-gpu-loss-ablation-v50-prepared` 已存在而退出，错误是 `output must be a new directory outside the repository`，不是 CUDA 错误。为保留旧目录与 checkpoint，代码和新提交的 v4 使用 `retry1-prepared` 与 `retry1-{loss}` 新目录。v4 仍排队，尚无本轮微调；额度变化暂不能归为训练。
 - 反馈发布器 kernel v1 的 Kaggle 日志确认失败于 `expected one source kernel summary; found 0`；反馈 kernel 没有挂载已完成的 v50 kernel 输出。没有发布 paper-trade experience 新版本。必须先让一个 v50 GPU kernel 实际完成并发布输出，再运行反馈发布器；当前本轮微调与数据闭环尚未完成。
 - Kaggle CLI 账号内 GPU kernel 列表只发现上述 v50 kernel；没有发现其他自有 GPU kernel 预留。配对计划总计 3 小时，额度充足。
 - Kaggle Relay 增量同步 v108 已完成并发布私有增量数据集 version 51：新增 20 个 capture ID，累计 434 个归档；`relay-increment-manifest.json` SHA-256 为 `878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e`。同步只在 Kaggle 处理数据，没有启动 CPU 微调，也没有消耗 GPU 额度。
