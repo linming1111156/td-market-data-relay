@@ -517,6 +517,8 @@
 
 - **Relay v98 同步并发布 capture version 44（Kaggle CPU，2026-11-22）**：私有同步 `minglinl99/laya-kaggle-relay-increment-sync-v98` 已 `COMPLETE`，查询水位 `2026-11-20T08:01:05Z`，累计私有数据集 version 44 经 Kaggle API 确认为 `Ready`。Relay index 366 条，新增 capture ID 7 个，366 个归档已核验；输入 654,987,780 bytes，无无效 manifest 项或远端 loss 记录。累计同步 manifest SHA-256 为 `a2527873c3c7a2a2ba66b7cc7023d0635b5b3665698c1ee43fb39c5e33797c56`。
 
+- **Relay v99 同步并发布 capture version 45（Kaggle CPU，2026-11-22）**：私有同步 `minglinl99/laya-kaggle-relay-increment-sync-v99` 已 `COMPLETE`，查询水位 `2026-11-20T08:01:05Z`，累计私有数据集 version 45 经 Kaggle API 确认为 `Ready`。Relay index 374 条，新增 capture ID 8 个，374 个归档已核验；输入 661,252,183 bytes，无无效 manifest 项或远端 loss 记录。累计同步 manifest SHA-256 为 `a6018e769f0ab0a9f7a9181b4b053d231885076a149129bd4cdd942774f03eec`。
+
 - **Relay capture version 44 覆盖审计通过（Kaggle CPU，2026-11-22）**：`laya-market-cpu-relay-snapshot-audit-99` 与只读索引 `laya-relay-snapshot-audit-index-99` 均 `COMPLETE`，索引 `pass`。366 条 Relay 查询记录对应 7 个新增 ID；累计 394 个归档经 Rust 校验全部有效，重复 capture ID=0、缺 sidecar=0，capture manifest SHA-256 与同步值一致。aggTrades/funding-mark 最大覆盖间隔仍约 60.12/60.09 分钟，无超过 2 小时空档。finalized-funding 45 个归档含 5,445 次 HTTPError，成功页=0、funding 行=0；HTTP 状态码、错误类别、代理模式及响应服务器字段仍为空。原始行情、派生数据和完整审计报告留在 Kaggle。
 
 - **capture version 44 九组标签矩阵 v98 完成（Kaggle CPU，2026-11-22）**：`laya-market-cpu-label-sensitivity-98` 与只读索引 `laya-label-sensitivity-index-98` 均 `COMPLETE`；索引 `pass`、9/9 配置，Relay manifest SHA=`a2527873c3c7a2a2ba66b7cc7023d0635b5b3665698c1ee43fb39c5e33797c56`。总 prepare 用时 1,613.234 秒，候选跳过明细 993 条；9 组 candidate schema 与逐配置 skip 明细/聚合通过。edge0 训练标签 flat/long/short：5m=`752/31/37`、15m=`627/95/95`、30m=`539/122/150`；held-out 标签只作描述，不用于选择设置，继续冻结 15m/edge0 作跨轮可比口径，无晋级结论。原始行情和完整报告留在 Kaggle。
