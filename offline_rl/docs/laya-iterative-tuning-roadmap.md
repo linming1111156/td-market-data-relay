@@ -27,6 +27,8 @@
 | `bulk_engine/src/laya_prepare.rs` | 从 Relay capture 生成时间排序的训练集与评估集 |
 | `scripts/build_laya_kaggle_paper_trade_dataset.py` | 从固定的历史 v24 运行构建 v31 paper-trade 回放数据；它不是当前 v50 模型结果的自动追加器，也不负责训练模型 |
 
+递归轮次生成到原有 GPU notebook 时，按环境/GPU、缓存数据准备、RLCD 微调、soft-ce 微调、结果汇总拆成独立 code cells。各阶段实时打印开始/完成事件和可用指标；若单支出错，可从对应分支单元继续，不必重做已完成的缓存准备。运行仍限定在现有 GPU notebook，不创建轮次专属 notebook。
+
 ## v50 配对实验（已完成，作为迭代基准）
 
 生成器的目标为 `minglinl99/laya-gpu-loss-ablation-capture-v50`。它创建私有 notebook，启用 GPU 与 Internet，设置 `NvidiaTeslaT4`，并挂载两个冻结的 Relay capture datasets。生成器把当前仓库里的 Rust 源码和微调脚本嵌入 notebook，因此 notebook 运行时不依赖本机工作区。

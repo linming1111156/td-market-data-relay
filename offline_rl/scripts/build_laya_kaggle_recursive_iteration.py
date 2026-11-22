@@ -60,6 +60,8 @@ subprocess.run([sys.executable,'-m','pip','install','--disable-pip-version-check
 import torch
 if not torch.cuda.is_available(): raise RuntimeError('CUDA requested for recursive fine-tuning but Kaggle did not allocate it')
 gpu_name=torch.cuda.get_device_name(0)
+print(json.dumps({'event':'gpu_ready','cuda_device_count':torch.cuda.device_count(),
+ 'gpu_name':gpu_name,'visible_devices':os.environ.get('CUDA_VISIBLE_DEVICES','all')}),flush=True)
 
 def sha256(path):
  h=hashlib.sha256()
@@ -85,6 +87,8 @@ def read_jsonl(path):
     except ValueError as error: raise ValueError(f'invalid JSONL {path}:{n}') from error
  return rows
 
+print(json.dumps({'event':'preparation_started','experience_ref':EXPERIENCE_REF,
+ 'relay_increment_ref':INCREMENT_REF},sort_keys=True),flush=True)
 experience=dataset_root(EXPERIENCE_REF)
 manifest_path=experience/'manifest.json'
 manifest_sha=sha256(manifest_path)
@@ -205,7 +209,7 @@ for rows,name in ((train_rows,'training'),(eval_rows,'evaluation')):
  if any(b<=a for a,b in zip(timestamps,timestamps[1:])):
   raise ValueError(name+' timestamps are not strictly increasing')
 prepared=WORK/'laya-recursive-round-prepared'
-prepared.mkdir()
+prepared.mkdir(exist_ok=True)
 for name,rows in (('train.jsonl',train_rows),('evaluation.jsonl',eval_rows)):
  with (prepared/name).open('wb') as stream:
   for row in rows: stream.write((canonical(row)+'\n').encode('utf-8'))
@@ -251,7 +255,7 @@ print(json.dumps({'event':'data_prepared','experience_manifest_sha256':manifest_
  'label_counts':label_counts,'rejected_cumulative_rows':dict(rejected)},ensure_ascii=False,sort_keys=True),flush=True)
 
 branches=[]
-for loss in LOSSES:
+def train_branch(loss):
  output=WORK/f'laya-recursive-round-model-{loss}'
  command=[sys.executable,str(ROOT/'offline_rl/scripts/laya_market_finetune.py'),
   '--relay-prepared-data-dir',str(prepared),'--output',str(output),'--device','cuda',
@@ -259,21 +263,25 @@ for loss in LOSSES:
   '--epochs','1','--micro-batch','16','--grad-accum','8','--seed',str(SEED),
   '--workers','2','--loss',loss]
  started=time.monotonic()
+ print(json.dumps({'event':'branch_started','branch':loss,'output':str(output)},
+  ensure_ascii=False,sort_keys=True),flush=True)
  subprocess.run(command,cwd=ROOT,check=True,timeout=int(PLAN_HOURS*3600))
  run_path=output/'run.json'; run=json.loads(run_path.read_text(encoding='utf-8'))
  if run.get('runtime_probe',{}).get('selected_device')!='cuda' or float(run.get('actual_gpu_hours') or 0)<=0:
   raise ValueError(f'{loss} branch did not prove actual CUDA training time')
- branches.append({'loss':loss,'run_json_sha256':sha256(run_path),
+ branch={'loss':loss,'run_json_sha256':sha256(run_path),
   'actual_gpu_hours':run.get('actual_gpu_hours'),
   'elapsed_seconds':round(time.monotonic()-started,3),
   'training_metrics':run.get('training_result'),
   'trading_evaluation':run.get('trading_evaluation'),
   'prediction_sha256':run.get('trading_evaluation_predictions_sha256'),
-  'evaluation_sha256':run.get('evaluation_jsonl_sha256')})
- print(json.dumps({'event':'recursive_branch_complete','branch':branches[-1]},
+  'evaluation_sha256':run.get('evaluation_jsonl_sha256')}
+ print(json.dumps({'event':'recursive_branch_complete','branch':branch},
   ensure_ascii=False,sort_keys=True,default=str),flush=True)
+ return branch
 summary={'schema':'td_market_data_laya_recursive_gpu_round','version':1,
- 'status':'trained_and_frozen_evaluated','experience_ref':EXPERIENCE_REF,
+ 'status':'trained_and_frozen_evaluated' if len(branches)==len(LOSSES) else 'partial_branch_results',
+ 'experience_ref':EXPERIENCE_REF,
  'experience_manifest_sha256':manifest_sha,'previous_feedback_round':EXPECTED_FEEDBACK_ROUND,
  'relay_ref':INCREMENT_REF,'relay_manifest_sha256':relay_sha,'base_capture_ref':BASE_CAPTURE_REF,
  'gpu_device':gpu_name,'quota_used_hours_at_start':QUOTA_USED,
@@ -335,11 +343,37 @@ def main() -> int:
         args.experience_manifest_sha256.lower(), args.capture_increment_ref,
         args.relay_manifest_sha256.lower(), args.seed,
         args.quota_used_hours, args.reserved_gpu_hours, args.plan_hours)
+    setup, preparation = source.split("experience=dataset_root(EXPERIENCE_REF)\n", 1)
+    preparation = "experience=dataset_root(EXPERIENCE_REF)\n" + preparation
+    preparation, summary = preparation.split(
+        "summary={'schema':'td_market_data_laya_recursive_gpu_round','version':1,\n", 1)
+    summary = "summary={'schema':'td_market_data_laya_recursive_gpu_round','version':1,\n" + summary
+    preparation += "\nprint(json.dumps({'event':'preparation_complete','train_rows':len(train_rows),\n 'evaluation_rows':len(eval_rows),'cache_hit':raw_cache_hit},sort_keys=True),flush=True)\n"
+    branch_cells = []
+    for index, loss in enumerate(("rlcd", "soft-ce"), start=3):
+        branch_cells.extend([
+            {"cell_type":"markdown","id":f"{loss}-branch-heading","metadata":{},
+             "source":f"## {index}. {loss} 微调分支\n\n独立执行并实时输出训练进度。\n"},
+            {"cell_type":"code","id":f"run-{loss}-branch","execution_count":None,
+             "metadata":{},"outputs":[],"source":
+             f"print(json.dumps({{'event':'branch_cell_started','branch':'{loss}'}},flush=True))\n"
+             f"branches.append(train_branch('{loss}'))\n"}])
     notebook = {"cells": [
         {"cell_type":"markdown","id":"recursive-gpu-notes","metadata":{},
-         "source":"Train one new Laya round on Kaggle GPU. Training labels come only from verified matured source outcomes; model predictions are retained for comparison but never used as labels. Evaluation uses a fresh Relay time window after the cumulative training history and a 15-minute embargo. All data and model artifacts remain in Kaggle.\n"},
-        {"cell_type":"code","id":"run-recursive-gpu-round","execution_count":None,
-         "metadata":{},"outputs":[],"source":source}],
+         "source":"在原有 GPU notebook 内分段执行：环境/GPU、缓存数据准备、RLCD、soft-ce、汇总。两支任务各自输出开始与结束事件；每支完成后即可查看 GPU 时长和评估指标。标签只取成熟真实 outcome，评估使用未参与训练的后续时间窗口。\n"},
+        {"cell_type":"markdown","id":"gpu-environment-heading","metadata":{},
+         "source":"## 1. 环境与 GPU 检查\n"},
+        {"cell_type":"code","id":"prepare-gpu-environment","execution_count":None,
+         "metadata":{},"outputs":[],"source":setup},
+        {"cell_type":"markdown","id":"prepare-data-heading","metadata":{},
+         "source":"## 2. 复用缓存并准备训练/评估数据\n"},
+        {"cell_type":"code","id":"prepare-recursive-gpu-data","execution_count":None,
+         "metadata":{},"outputs":[],"source":preparation},
+        *branch_cells,
+        {"cell_type":"markdown","id":"round-summary-heading","metadata":{},
+         "source":"## 5. 冻结本轮结果并输出汇总\n"},
+        {"cell_type":"code","id":"summarize-recursive-gpu-round","execution_count":None,
+         "metadata":{},"outputs":[],"source":summary}],
         "metadata":{"kernelspec":{"display_name":"Python 3","language":"python","name":"python3"}},
         "nbformat":4,"nbformat_minor":5}
     target=args.output_dir/slug; target.mkdir(parents=True,exist_ok=True)
