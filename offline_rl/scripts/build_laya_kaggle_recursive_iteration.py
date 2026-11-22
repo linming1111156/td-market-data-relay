@@ -52,11 +52,11 @@ if QUOTA_USED+OTHER_RESERVED+PLAN_HOURS*len(LOSSES)>30:
 for name,payload in FILES.items():
  path=ROOT/name; path.parent.mkdir(parents=True,exist_ok=True)
  path.write_bytes(base64.b64decode(payload))
-if shutil.which('cargo') is None:
- subprocess.run(['bash','-lc',"curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal"],check=True)
-os.environ['PATH']=str(Path.home()/'.cargo'/'bin')+os.pathsep+os.environ.get('PATH','')
-subprocess.run([sys.executable,'-m','pip','install','--disable-pip-version-check',
- 'laya==0.5.0','vegaml[learn]==0.17.2'],check=True)
+try:
+ import laya.train  # noqa: F401
+except ImportError:
+ subprocess.run([sys.executable,'-m','pip','install','--disable-pip-version-check',
+  'laya==0.5.0','vegaml[learn]==0.17.2'],check=True)
 import torch
 if not torch.cuda.is_available(): raise RuntimeError('CUDA requested for recursive fine-tuning but Kaggle did not allocate it')
 gpu_name=torch.cuda.get_device_name(0)
@@ -177,6 +177,9 @@ else:
    sort_keys=True),flush=True)
  else:
   shutil.rmtree(prepared_raw,ignore_errors=True)
+  if shutil.which('cargo') is None:
+   subprocess.run(['bash','-lc',"curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal"],check=True)
+   os.environ['PATH']=str(Path.home()/'.cargo'/'bin')+os.pathsep+os.environ.get('PATH','')
   prepare_cmd=[sys.executable,str(ROOT/'offline_rl/scripts/laya_market_finetune.py'),
    '--archive-root',str(base),'--additional-archive-root',str(increment),
    '--additional-dataset-ref',INCREMENT_REF,'--output',str(prepared_raw),

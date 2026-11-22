@@ -15,11 +15,12 @@
 - 递归轮次 v52 已在 T4 上完成 RLCD、soft-ce 两支训练和 20 条冻结留出评估：945 条训练、105 条校准；GPU 时间分别为 0.022042h、0.019862h（合计 0.041904h）。两支均预测 short，费用后净 PnL -601.234 bps，accuracy 5%、balanced accuracy 33.33%、macro-F1 0.03175；Brier 从 0.7969 降至 0.6961/0.6912，ECE 从 0.4159 降至 0.3198/0.3143。留出样本只有 20 条，交易效果仍差，校准改善不足以证明策略变好。
 - v52 的成熟真实 outcome 与逐样本预测已发布到累计 paper-trade dataset version 54；Kaggle MCP 当前确认 version 54 为 Ready，notes 为 `Add verified GPU model evaluation gpu-recursive-round-v52`。累计行数尚未通过 Kaggle 内摘要核实，不填写推测数值。Relay 输入当前为 `td-market-vps-captures` version 1 与 `td-market-vps-captures-increment-20261120` version 52。
 - 用户删除了先前 Kaggle notebooks。Kaggle CLI 的 `kernels list --mine` 曾确认无项目；现已按用户要求重建独立项目。CPU 数据准备 version 2 已开始运行；GPU 递归微调 version 2、VPS Relay 同步 version 1、结果反馈 version 2 已保存。
-- GPU 项目固定为 `minglinl99/laya-gpu-finetune`，每轮继续推送到同一个项目。notebook 已拆为 GPU 环境、CPU 准备数据读取/缓存、RLCD、soft-ce、汇总单元；metadata 请求 T4 x2 并挂载累计体验数据、Relay captures 与 CPU 准备项目输出。已保存未运行 GPU 项目，尚未消耗本轮训练额度。
-- CPU 准备项目为 `minglinl99/laya-cpu-data-preparation`：在 Kaggle CPU 上生成 Relay 训练/评估数据并缓存，运行产物留在 Kaggle，供 GPU notebook 作为 kernel input 读取。当前 version 2 运行状态为 `RUNNING`；训练仍未开始。
-- VPS 远端同步项目为 `minglinl99/laya-kaggle-relay-increment-sync-main`，启用 Internet、挂载既有增量集和私有 Relay 配置；首次仅保存 version 1，没有运行或发布数据。反馈项目为 `minglinl99/laya-model-feedback-gpu-recursive-round-v53`，挂载 GPU 输出与累计数据集；仅在 GPU 评估冻结且真实 outcome 成熟后运行发布。
-- Kaggle 官方 GPU 额度（2026-11-23 最近查询）：已用 3.58h，剩余 26.42/30h，刷新时间 2026-11-28 00:00 UTC。CPU 准备阶段不占用 GPU；GPU 项目目前未运行。
-- 下一步：等待并确认 CPU version 2 的准备产物已作为 Kaggle kernel output 发布；然后在 GPU 项目逐 cell 运行 RLCD 和 soft-ce，冻结留出指标，再启动反馈项目回灌成熟 outcome。
+- GPU 项目固定为 `minglinl99/laya-gpu-finetune`，后续每轮继续更新同一个项目。version 3 按 cell 拆分 GPU 环境、CPU 准备数据合并、RLCD、soft-ce 和汇总；metadata 挂载累计体验、Relay captures 与 CPU 项目输出。Draft Session 曾显示 T4 x2 On；模型训练尚未开始。
+- CPU 准备项目 `minglinl99/laya-cpu-data-preparation` version 2 已完成，CPU 生成 858 条训练、212 条评估行，标签数分别为 train flat/long/short 657/99/102，evaluation 151/31/30；prepared manifest SHA-256 `1a8b9043dacc89c88f066f061aa3d9b9dfb86a06040f7fcf641c834264c0b171`。GPU 项目已从 Kaggle kernel output 读取这份准备数据。
+- GPU 准备/合并 cell 在训练前发现：累计体验 version 54 的时间范围覆盖这批 212 条候选评估行；应用 15 分钟 embargo 后没有新鲜留出行，因此未开始 RLCD/soft-ce 微调。不能把旧评估行作为新留出集。首次 Draft 环境尝试因 Internet 默认关闭而无法安装依赖；在 Settings 中开启 Internet 后环境 cell 执行完成。第二个数据 cell按正确路径复用了 CPU kernel 输出，并因无新评估行退出；之后已停止 Draft Session。GPU 额度因此短时增加。
+- VPS 远端同步项目 `minglinl99/laya-kaggle-relay-increment-sync-main` version 2 正在 Kaggle CLI 报 `RUNNING`，用于从私有 Relay 拉取更晚 captures 并发布增量数据集新版本；当前累计增量仍是 version 52。结果反馈项目 `minglinl99/laya-model-feedback-gpu-recursive-round-v53` 已保存 version 2，待新一轮 GPU 训练和冻结评估后再运行。
+- Kaggle 官方 GPU 额度（2026-11-23 最近查询）：已用 3.71h，剩余 26.29/30h，刷新时间 2026-11-28 00:00 UTC。CPU 准备和 Relay 同步均不请求 GPU；尚无新一轮模型训练。
+- 下一步：等 Relay 同步结束；若发布新增 captures，用其最新版本重跑 CPU 准备；再刷新固定 GPU 项目的输入版本，检查时间切分确有后置留出窗口后，逐 cell 运行 RLCD 与 soft-ce。冻结评估后再启动反馈项目。
 - Relay 的 CPU 归档准备结果缓存于 Kaggle `/kaggle/working`，相同挂载输入与参数在同一 live session 重跑时复用；输入变化或缓存不可读时自动重建，不因缓存状态中止。所有缓存数据留在 Kaggle。
 ## 当前实现入口
 
