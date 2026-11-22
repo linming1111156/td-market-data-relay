@@ -17,7 +17,7 @@
 - 历史全局 80/20 切分只有 29 条训练（全部来自 11 月 10 日）和 110 条评估（11 月 19-20 日），评估按大于 30 分钟的真实间隔分为两个各 55 行的连续段。评估标签分别为 flat/short/long = 47/3/5 与 35/14/6。always-flat accuracy 是 85.45% 与 63.64%；趋势规则费用后净收益为 -218.127 与 -430.354 bps，反转规则为 -261.873 与 -709.646 bps。整体趋势规则净收益 -648.481 bps，未达到晋级门槛。训练量小且存在长数据空档，当前结果只作数据质量诊断，不训练或启用 GPU。
 - 上述本机扫描与 CPU 诊断只保留汇总数字作为“已废弃的历史记录”，其本机报告、manifest、训练/评估 JSONL、Vision 缓存和从 Kaggle 下载到本机的增量归档副本均已删除。历史数字不可作为当前数据输入、可复现实验产物或晋级证据。
 - 历史 Vision 分支仅保留实验结论摘要：2025-11 训练、2026-09 评估，各 2,874 条不重叠决策；always-flat 准确率约 90.2%-93.3%、balanced accuracy 33.3%，规则/轻量模型各段费用后收益全负。原始 ZIP、处理数据与报告不在本机保留；该分支时间信息不含实时接收时间和结算 Funding ledger，不与 Relay 流混合，也不能单独证明跨行情稳定性。
-- `offline_rl/scripts/laya_vision_prepare.py` 和 `laya_market_finetune.py` 支持带 SHA-256 清单的历史输入。此前在本机生成的 1.2 GB Vision 缓存及本机 Laya 训练/评估 JSONL 已删除；相关 CPU 报告只作历史记录，不得作为后续输入。此后原始输入、数据准备、CPU 诊断、Rust 处理、训练、评估和输出都必须在 Kaggle：微调及 Laya 推理/持续学习在配额新鲜且批次总用量不超过 27 小时时优先启用 GPU，额度不足时回退 Kaggle CPU；Rust 数据准备和传统基线使用 Kaggle CPU。
+- `offline_rl/scripts/laya_vision_prepare.py` 和 `laya_market_finetune.py` 支持带 SHA-256 清单的历史输入。此前在本机生成的 1.2 GB Vision 缓存及本机 Laya 训练/评估 JSONL 已删除；相关 CPU 报告只作历史记录，不得作为后续输入。此后原始输入、数据准备、CPU 诊断、Rust 处理、训练、评估和输出都必须在 Kaggle：微调及 Laya 推理/持续学习等 GPU 兼容主线任务必须优先使用 Kaggle GPU，并把滚动 7 天额度用尽；只有额度实际耗尽，或 Kaggle 未分配 GPU/CUDA 不可用时，才回退 Kaggle CPU。额度未知时先查询和确认，不提前切换 CPU。Rust 数据准备和传统基线等 CPU 原生任务仍使用 Kaggle CPU。
 - Kaggle API 凭据位于 `~/.kaggle/access_token`，权限为 `0600`；绝不读取、输出或记录 token 内容。此环境应使用 `uvx --from kaggle --with six kaggle ...` 运行 Kaggle CLI 2.2.5；不要依赖全局 `kaggle` 命令（本机未安装），也不要用 Python 3.9 的 Kaggle 包 1.7.4.5（它只检查旧格式 `~/.kaggle/kaggle.json`，因此会误报缺少凭据）。每个 notebook 都通过 `kernel-metadata.json` 显式设置私有性、数据集 sources、Internet 和 GPU/TPU；仅在运行需用 GPU 时开启 GPU，之后核对 Kaggle 元数据与运行状态。
 - **Relay 配置固定记录**：服务地址为 `https://us-relay-1.linair99.de5.net`；密钥变量名为 `RELAY_API_KEY`，本机来源文件为 `/Users/lin/project/td-market-data-relay/.env`。文档只记录地址、变量名和文件路径；不得读取后输出、提交或复制密钥值。Kaggle 侧只从 Kaggle Secret/私有配置集读取该变量，Relay 响应中的数据与运行产物仍只留在 Kaggle。
 - 早期状态快照（已被本节后续记录取代）：Kaggle 凭据在 `~/.kaggle/access_token`，token 不进入仓库。CPU v15 的 Rust 准备接受 461 个归档并生成 707 条训练、150 条评估；Vega 已推理，seeded learner 的 CPU 初始化仍慢。该快照记录旧 CPU 项目仍在运行、v8 version 2 已保存但未运行；二者状态后来均已更新。GPU evaluation、prequential 与 MB4/MB8 的指标见上方证据，均未晋级。MB16/MB32 branch-matrix v7 首个 seed 分支超过 0.5 小时限制而失败。Kaggle 可同时运行的 GPU notebook 槽位上限实测为 2；Web UI 多 cell 并发仍待探针验证。
@@ -29,7 +29,7 @@
 - 输出评估样本的真实标签、预测标签和混淆矩阵，逐条检查类别顺序和 Laya 的 choice 输出。
 - 用同一份评估 JSONL 计算 always-flat、base Laya、微调 Laya 的准确率、balanced accuracy、macro-F1 和各类别召回率。
 - 验证评估集与训练集按时间完全隔离，并检查校准数据是否与评估数据复用。
-- 先完成指标口径核对；核对通过且数据满足实验条件后，Kaggle 微调优先使用 GPU。若 GPU 滚动配额已满、剩余额度不足或无法核实，则切换到 Kaggle CPU，不突破配额上限。所有原始与派生数据、依赖安装、处理、训练、评估、报告和模型产物均在 Kaggle 完成；本机只保存源代码与路线图，不下载或缓存 Laya 数据/运行产物。
+- 先完成指标口径核对；核对通过且数据满足实验条件后，Kaggle 微调必须先使用 GPU，并持续安排 GPU 兼容任务直至官方滚动额度用尽。只在额度实际耗尽，或 Kaggle 未分配 GPU/CUDA 不可用时切换到 Kaggle CPU；额度状态未知时先查询，不以未知或“计划不够 27 小时”为由提前回退。不得超过官方 30 小时上限，也不得为消耗额度重复相同实验。所有原始与派生数据、依赖安装、处理、训练、评估、报告和模型产物均在 Kaggle 完成；本机只保存源代码与路线图，不下载或缓存 Laya 数据/运行产物。
 
 ### 2. 用 Kaggle CPU 改善数据与标签
 
@@ -57,7 +57,7 @@
 ### 5. 优先 Kaggle GPU 微调、持续评估和反馈服务，额度不可用时转 Kaggle CPU
 
 - 通过评估口径和数据质量检查后，优先用可用 GPU 做经典 encoder 微调；每轮只改一个因素，并与 base Laya、当前晋级 checkpoint 及 CPU 基线比较。微调不是自动晋级，仍须满足多时间段和费用后验收标准。
-- 每次启动前查询 Kaggle 滚动 7 天 GPU 用量和预留量。若该轮计划会使计划用量超过 27 小时，或额度已耗尽/无法核实，则该轮在 Kaggle 改用 CPU；任何情况不得超过 30 小时硬上限。额度恢复后再回到 GPU 优先调度。本机 CPU 不作为模型运行的回退设备。
+- 每次启动前查询 Kaggle 滚动 7 天 GPU 用量和预留量。对 GPU 兼容的主线任务，必须先用 GPU 消耗可用额度；单轮计划超出当前剩余额度时，先用尽剩余额度，未完成部分再在 Kaggle CPU 继续。只有滚动额度实际耗尽，或 Kaggle 未分配 GPU/CUDA 不可用时，才回退 Kaggle CPU；额度未知时先查询。不得超过官方 30 小时硬上限，也不为消耗额度重复相同实验。额度恢复后重新执行 GPU 优先规则。本机 CPU 不作为模型运行的回退设备。
 - Laya 0.5 `Learner` 的反馈训练、持续评估和反馈服务均优先使用已批准的 Kaggle GPU；额度不足或 CUDA 不可用时回退 Kaggle CPU。它们与经典 encoder 微调分开评估，GPU 不是运行前提。
 - 每个实验项目一次只改一个因素，并保留之前晋级的 head/checkpoint。将互相独立的评估或单因素实验拆成多个私有 Kaggle 项目并行运行，缩短验证墙钟时间；不重复跑相同任务来消耗 GPU，也不把大模型微调当作默认递归路径。
 
@@ -65,13 +65,13 @@
 
 - 每轮先冻结数据版本、评估切分、模型起点和候选假设，再按互相独立的任务创建多个私有 Kaggle 项目；项目名称和 manifest 使用统一轮次编号及不同实验标签。优先并行运行独立模型/种子、互不重叠的时间段或消融项。
 - **GPU notebook 槽位受限时，优先在最多两个已获 GPU 的 notebook 内并行编排多个微调子分支**，而不是为每个子分支再创建 GPU notebook。每个分支使用独立实验配置、随机种子、checkpoint、日志和输出目录；共享只读的已校验输入及 Rust 准备结果，不得共享会互相覆盖的训练状态。分支须在一个矩阵清单中登记假设、单因素改动、预算上限和结果。
-- [build_laya_kaggle_finetune_notebooks.py](../scripts/build_laya_kaggle_finetune_notebooks.py) 已生成 MB16/MB32 私有 T4 notebook 的 v8 矩阵方案：每个 notebook 4 个独立 seed 分支、每分支独立 checkpoint/log/output、Rust 准备只运行一次；当前实现使用最多 2 个有界子进程。8 个分支最初各预留 0.5 GPU 小时，整批计划 4 GPU 小时；v7 的实际首分支超时说明该预算/时限需在新探针后重估。启动前须传入新鲜官方 quota 和其他活动/排队 GPU 任务剩余预留小时，并校验 `已用 + 已预留 + 本批计划 <= 27h`。Web UI 多 cell 执行作为另一种候选调度方式，按上方规则实测前不视为可用并发。
+- [build_laya_kaggle_finetune_notebooks.py](../scripts/build_laya_kaggle_finetune_notebooks.py) 已生成 MB16/MB32 私有 T4 notebook 的 v8 矩阵方案：每个 notebook 4 个独立 seed 分支、每分支独立 checkpoint/log/output、Rust 准备只运行一次；当前实现使用最多 2 个有界子进程。8 个分支最初各预留 0.5 GPU 小时，整批计划 4 GPU 小时；v7 的实际首分支超时说明该预算/时限需在新探针后重估。启动前须传入新鲜官方 quota 和其他活动/排队 GPU 任务剩余预留小时，核对 `已用 + 已预留 + 本批计划 <= 30h`，并把可用额度安排给 GPU 兼容主线任务用尽；额度耗尽后再用 Kaggle CPU 补完。Web UI 多 cell 执行作为另一种候选调度方式，按上方规则实测前不视为可用并发。
 - **Web UI 多代码片段并行规则（用户提出，待实测）**：Kaggle GPU notebook 同时槽位最多两个时，下一步微调优先放进这两个 GPU notebook 内，各 notebook 再拆成多个独立子分支，不为每个分支额外申请 GPU notebook。用户记得 Kaggle Web 端可同时运行多个 cell/脚本；将其作为优先验证的编排方法，但当前没有本项目实测证据，不能写成已确认能力。每个 cell 只启动一个隔离子进程，使用独立配置、种子、checkpoint、日志和输出目录，不依赖可变共享 Python 全局变量；只读共享已校验输入和 Rust 准备结果。正式训练前，用 Web UI 在同一 notebook 同时启动两个轻量 cell 探针，记录启动/结束时间、执行状态、kernel/session 标识并确认时间重叠；只有界面显示“运行中”不算证据。若 cell 排队串行，则使用 notebook 内有界子进程调度。所有分支仍共享 notebook 的 GPU、CPU、内存与时限；并发不增加 GPU 配额，也不代表获得独立加速器。确认重叠后先限制同时训练数并观察显存和吞吐，再扩大分支；统一滚动预算按所有分支实际 GPU 用量核算。
 - 在共享 GPU 上并发会争用显存和算力。按可用显存及吞吐限制同时训练数，优先通过顺序准备、异步数据处理或短任务错峰隐藏空档；只有确认资源足够时才让多个 GPU 训练步骤同时运行。任一分支 OOM、被抢占或未完成都要单独记为失败/未完成，不能静默丢弃；父 notebook 仍须输出完整分支清单和成功、失败、跳过状态。
 - notebook 层面的计划运行时间按其内部所有分支的最坏总 GPU 用量估算，而不是把每个分支各自的 quota 额度相加或忽略。记录父 notebook 的总时长上限、每个子分支预算、实际 GPU 小时和共享准备开销；统一用批次公式核算总预算。若共享资源导致分支串行，预算按串行上界计；若确有重叠，GPU 小时仍按所有分支实际累计用量计。
 - 数据准备和 Rust 归档校验只做一次并固化为 Kaggle 数据版本或校验过的输入；各项目只挂载同一只读输入，使用不同 `/kaggle/working` 输出目录，避免重复预处理、覆盖报告或相互污染状态。
 - `prequential` 单条时间序列必须保持先预测、后反馈、再更新的顺序；不得把同一序列拆成并行片段后冒充连续学习结果。只有各自从相同冻结 checkpoint 开始、评估边界独立的时间段才可并行，结果合并时保留各段与模型版本信息。
-- 并行启动前读取一次新鲜 Kaggle GPU quota，并盘点仍在运行和已排队的 GPU 项目。令 `U` 为滚动 7 天已用时、`r_j` 为已运行/排队 GPU 项目的剩余计划小时、`p_i` 为本批新项目的计划 GPU 小时，则统一调度器必须先核算 `U + sum(r_j) + sum(p_i) <= 27h`，至少留 3 小时余量且不触及 30 小时硬上限。运行中的 v16 也计入 `r_j`；不得让每个项目分别拿完整 27 小时额度。每个项目自己的设备门控不能代替批次总预算核算。
+- 并行启动前读取一次新鲜 Kaggle GPU quota，并盘点仍在运行和已排队的 GPU 项目。令 `U` 为滚动 7 天已用时、`r_j` 为已运行/排队 GPU 项目的剩余计划小时、`p_i` 为本批新项目的计划 GPU 小时，则统一调度器必须核算 `U + sum(r_j) + sum(p_i) <= 30h`，不得超过官方上限；将剩余额度优先分配给 GPU 兼容主线任务，直到额度实际耗尽，再将未完成任务切至 Kaggle CPU。额度未知时先查清；不再人为保留 3 小时余量或以 27h 作为 CPU 回退线。不得重复同一实验来消耗额度。运行中的 v16 也计入 `r_j`；每个项目自己的设备门控不能代替批次总预算核算。
 - 为每个 notebook 分配单独的 GPU 时长和总超时；启动后核对实际加速器与运行状态。若 Kaggle 同时运行限制、资源排队或 T4 不可用导致并行 GPU 未实际分配，则排队或按总预算切换 Kaggle CPU，不用本机 CPU，也不突破配额。每个项目完成后立即保存输出并释放槽位，从已预备队列立即启动下一项；不因等齐其他项目结果而空置可用 GPU。
 - 流水线规则：首批运行期间就准备下一批 notebook 和 metadata；可用时以 `--no-run` 私有保存，Kaggle 并发槽位释放后立即 push/run。每次结束时先记录结果，再补充路线图和队列状态，保持 GPU 槽位持续有已排队工作。若同时运行上限已满，只预建并排队，不重复启动来突破上限。
 - 并行只缩短独立验证任务的墙钟时间，不改变评估口径或晋级门槛；每个项目一旦完成，立即把配置、数据/评估切分、设备、quota、核心指标、费用后净收益、限制及晋级决定追加到本路线图，再启动队列下一项。任何单个项目的成功结果仍须在多个未见时间段与费用后指标上满足路线图门槛，才可晋级。
@@ -90,8 +90,8 @@
 
 ### 6. GPU 配额与释放
 
-- 硬上限：任意滚动 7 天 GPU 时间不超过 30 小时；计划预算不超过 27 小时，留出排队和统计误差余量。
-- 调度模式：微调、Laya 推理、持续评估和反馈服务优先使用可用 Kaggle GPU；配额已满、剩余额度不满足计划，或无法确认额度时，切换到 Kaggle CPU。每次启动 GPU 前核对滚动配额，任何情况不超过 30 小时；计划不超过 27 小时，留出排队和统计误差余量。数据完整性检查、Rust 合成和传统基线也都在 Kaggle CPU 上运行。
+- 硬上限：任意滚动 7 天 GPU 时间不超过 Kaggle 官方 30 小时上限；不得超过上限，但也不得在额度尚可用时因为旧的 27 小时计划线或预留 3 小时而提前转 CPU。
+- 调度模式：微调、Laya 推理、持续评估和反馈服务等 GPU 兼容任务优先使用 Kaggle GPU，并持续使用到滚动额度实际耗尽；额度耗尽后，或 Kaggle 未分配 GPU/CUDA 不可用时，未完成任务才回退 Kaggle CPU。额度状态未知时先查明。每次启动 GPU 前核对滚动配额和活动任务，确保总量不超过 30 小时。数据完整性检查、Rust 合成和传统基线等 CPU 原生任务继续在 Kaggle CPU 上运行。
 - GPU 只在计划内的模型微调、推理或持续学习期间开启；任务完成或失败后立即停止会话并关闭加速器，确认没有活动 GPU 会话。
 
 ### Laya 0.5 设备边界
@@ -99,7 +99,8 @@
 - Laya 0.5 不是 CPU-only：训练入口有 `--device cuda`，Reader/Learner 调用也接收 device 参数；CPU v15 是 CPU 诊断；新建的 GPU v16 启用 T4，并为持续评估设置 CUDA 优先、额度门控和 Kaggle CPU 回退。
 - `laya_market_continuous.py` 的 evaluate、prequential、serve 共用滚动配额门控；`laya_market_feedback_server.py` 使用同一设备选择逻辑，审计记录设备、配额与最长运行时间。经典 encoder 微调入口有 quota-gated CUDA/auto 逻辑，需在 fresh quota check 之后使用。
 - 不能把整个流程都迁到 GPU：Rust zstd 校验、数据清洗/标签、CPU 规则与传统基线仍在 Kaggle CPU；Laya/Vega 模型推理或训练才可能使用 GPU。CPU 诊断完成后，若候选实验确需 GPU，先以 `kaggle quota` 查询当前额度，再开启 Kaggle GPU；绝不从本机 CPU 回退。
-- 配额实测（2026-11-20，Kaggle CLI `kaggle quota`）：GPU 已用 0.22h、剩余 29.78h/30h，refreshAt 为 `2026-11-21T00:00:00Z`；TPU 已用 0h、剩余 20h。此值仅为本次读数；下一次 GPU 启动前重查。按 27h 计划线，本次读数对应最多再计划 26.78h，且仍须给排队/计量误差留余量。
+- 配额实测（2026-11-20，Kaggle CLI `kaggle quota`）：GPU 已用 0.22h、剩余 29.78h/30h，refreshAt 为 `2026-11-21T00:00:00Z`；TPU 已用 0h、剩余 20h。此值仅为当时读数；下一次 GPU 启动前重查。原“27h 计划线并预留 3h”的安排已被 2026-11-22 新规则取代。
+- **额度调度规则更新（2026-11-22，用户明确要求）**：用户观察到 30h GPU 额度几乎未被使用，要求 GPU 兼容任务在回退 CPU 前先用完当期 Kaggle 滚动额度。今后不再人为设置 27h 计划线或预留 3h；真实主线 GPU 任务使用 GPU 直至官方额度耗尽，之后才在 Kaggle CPU 继续。严格遵守 30h 上限，不重复相同实验只为消耗额度；GPU 未分配或 CUDA 不可用时记录平台原因并回退 CPU。
 
 ## Python 性能与内存硬约束
 
@@ -132,7 +133,7 @@
 - 最新状态复核（2026-11-20）：v7 错误审计 `COMPLETE`，v8 MB16/MB32 version 2 均 `COMPLETE` 但没有输出文件，说明版本已保存而未形成训练结果；Kaggle 官方 quota 仍为已用 2.14h、剩余 27.86h/30h，refreshAt `2026-11-21T00:00:00Z`。v8 尚未启动，且其版本不包含刚补充的 Web UI 多 cell 并行探针设计；启动前需更新/保存 notebook 代码并刷新 quota 与活动 GPU 任务清单。
 - Kaggle 浏览器桥接在 2026-11-20 的本轮检查仍返回 browser host unavailable；因此无法通过 Web UI 验证多个 cell 是否真正重叠执行。v8 version 3 使用有界子进程并行，路线图中的 Web UI 双 cell 轻量探针仍待浏览器可用后实测。
 - 迭代 v17 启动记录（2026-11-20）：Kaggle 数据集元信息显示主快照最后更新于 `2026-11-19T17:07:26Z`，增量快照最后更新于 `2026-11-20T08:01:05Z`。新增私有 CPU 项目 `laya-market-cpu-label-sensitivity-v17`，GPU/TPU 关闭，固定同一时间切分并用 Rust 比较 5/15/30 分钟前瞻周期 × 0/10/30 bps 额外 round-trip edge 共 9 组。只按训练侧标签覆盖/分布筛候选，评估切分只用于最终报告，不选参；各组输出行 JSONL 哈希、标签分布、时间段和拒绝原因，处理后删除中间 JSONL。版本 1/2/3 分别因旧 target 路径、Rust 可执行文件名称错误、请求缺少 schema/version 字段而未进入数据扫描；均发生在编译后、微调/GPU 之前。版本 4 修正上述路径、名称和请求结构后完成扫描，终态和结果见文末最新状态。前三个版本不计为数据诊断结果。生成器位于 [build_laya_kaggle_label_sensitivity.py](../scripts/build_laya_kaggle_label_sensitivity.py)。
-- 下一批微调在原两个私有 GPU 项目 MB16/MB32 的 v8 version 3 启动；每 notebook 4 个种子分支、最多两个并发子进程，分支时限由失败的 0.5h 调至 1.5h。整批最坏 GPU 预留 12h，启动时 quota 已用 2.14h，计划合计 14.14/27h。
+- 历史计划记录：微调在原两个私有 GPU 项目 MB16/MB32 的 v8 version 3 启动；每 notebook 4 个种子分支、最多两个并发子进程，分支时限由失败的 0.5h 调至 1.5h。整批最坏 GPU 预留 12h，启动时 quota 已用 2.14h，按当时规则计划合计 14.14/27h；27h 预算线已被本节新的额度调度规则取代。
 - MB16 v8 version 3 已完成：CUDA/T4 实际启用，4 个种子各完成一次训练与费用后 held-out 评估，训练用时 142.978–154.258 秒，分支报告的 GPU 运行时间 0.042697–0.045908h，合计 0.177232h。4 个种子的预测完全相同：accuracy 14.67%、balanced accuracy 33.33%、macro-F1 8.53%；150 行全部预测为 short、150 笔交易，gross PnL +211.175 bps、成本 4,500 bps、净 PnL -4,288.825 bps。两个连续时间片净 PnL 分别 -2,984.848 和 -1,303.977 bps。分类和费用后收益均未优于现有判断，不晋级；单一切分的两个连续时间片仍不足以代表多个独立行情区间。四个 seed 得到相同预测，后续优先检查微调是否改变有效决策输出，避免重复消耗 GPU 做无效种子扩展。
 - MB32 v8 version 3 现也已完成：CUDA/T4 实际启用，4 个种子训练用时 156.575–158.217 秒，分支报告 GPU 运行时间合计 0.187262h；四种子指标与 MB16 完全相同，accuracy 14.67%、balanced accuracy 33.33%、macro-F1 8.53%、150 笔 short、gross PnL +211.175 bps、成本 4,500 bps、net PnL -4,288.825 bps；两个连续时间片各为 -2,984.848 和 -1,303.977 bps。不晋级。微批从 16 增至 32 没改变分类或交易输出。两项目分支日志 GPU 时间合计 0.364494h；官方账户配额显示从 2.14h 增至 2.44h（显示精度 0.01h），总额以官方配额为准。
 - **最新迭代状态（2026-11-20）**：CPU v17 version 4 已 `COMPLETE`，Kaggle 输出含 9 组报告和汇总 JSON；Rust 九组扫描总耗时 1,223.621 秒。标签计数（flat/long/short）如下，训练/评估固定时间切分：
