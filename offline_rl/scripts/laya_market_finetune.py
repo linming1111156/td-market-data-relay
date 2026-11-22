@@ -360,15 +360,15 @@ def main() -> int:
                           and used >= 0 and planned > 0)
         if args.device == "cuda" and not quota_verified:
             raise ValueError("CUDA training requires a fresh 7-day usage check and valid --gpu-hours-used-7d/--gpu-planned-hours")
-        within_plan = bool(quota_verified and used <= 30 and used + planned <= 27)
+        within_plan = bool(quota_verified and used <= 30 and used + planned <= 30)
         if args.device == "cuda" and not within_plan:
-            raise ValueError("GPU budget gate failed: planned total must stay within 27 h and the hard limit is 30 h per rolling 7 days")
+            raise ValueError("GPU budget gate failed: planned total must stay within the official 30 h rolling 7-day limit")
         gpu_budget = {"observed_hours_used_rolling_7d": used if quota_verified else None,
                       "planned_hours": planned if quota_verified else None,
                       "planned_total_hours": used + planned if quota_verified else None,
                       "quota_verified": quota_verified,
                       "within_plan": within_plan,
-                      "plan_limit_hours": 27,
+                      "plan_limit_hours": 30,
                       "hard_limit_hours": 30,
                       "operator_checked_quota_before_run": quota_verified}
 

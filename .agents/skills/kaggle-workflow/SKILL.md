@@ -26,6 +26,12 @@ Before starting or falling back from any GPU-compatible mainline task:
 
 Record quota before/after, requested and actual device, GPU hours, and any fallback reason with the task's results. Where a roadmap exists, update its evidence after each major task, then commit and push the completed change as the user requested.
 
+For this project, follow only the roadmap's top-level current-status block and current GPU iteration loop. Treat older CPU baselines, audits, and historical "next step" notes as evidence, not as queued work. Do not start a CPU-only backlog ahead of an available GPU-compatible fine-tuning task. CPU fallback remains limited to official quota exhaustion or a recorded Kaggle GPU/CUDA allocation failure.
+
+Each iteration is: freeze the Kaggle input version and split; GPU fine-tune with an explicit hypothesis; save the checkpoint and run manifest; evaluate on the untouched frozen split; append predictions paired with mature, verified real outcomes to a new version of the cumulative Kaggle results dataset; then start the next GPU iteration from the accumulated data. Never use model predictions as ground-truth labels, and do not train on a round's held-out labels before that round's metrics are frozen.
+
+Keep the user updated at submission, actual GPU allocation, each branch completion, dataset-version publication, and next-round start. For runs longer than 10 minutes, send a status update at least every 10 minutes. Each update reports fine-tune round/branch counts, actual GPU hours and remaining quota, post-training metrics when available, cumulative dataset counts, and the next action. Distinguish queued, running, failed-before-training, and trained outcomes; a failed setup is not a completed fine-tune.
+
 ## Safe Kaggle operations
 
 - Prefer MCP read/list/metadata operations when they return the needed facts. Use Kaggle CLI `kernels status` for a notebook's execution status and `kernels logs` for run logs.

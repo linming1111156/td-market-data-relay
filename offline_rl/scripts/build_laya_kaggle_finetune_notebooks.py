@@ -61,7 +61,7 @@ micro_batch={micro_batch}
 batch_plan_hours=per_branch_plan_hours*len(branch_seeds)
 paired_notebook_gpu_hours=per_branch_plan_hours*len(branch_seeds)
 plan_total_hours=quota_used_hours+other_reserved_gpu_hours+batch_plan_hours+paired_notebook_gpu_hours
-if plan_total_hours>27 or quota_used_hours>30:
+if plan_total_hours>30 or quota_used_hours>30:
  raise RuntimeError(f'GPU batch exceeds plan: used={{quota_used_hours}} reserved={{other_reserved_gpu_hours}} planned={{batch_plan_hours}}')
 batch_id=str(time.time_ns())
 os.environ['CARGO_TARGET_DIR']=str(Path('/tmp')/('laya-v16-mb{micro_batch}-cargo-'+batch_id))
@@ -169,8 +169,8 @@ def main() -> int:
         parser.error("--per-branch-hours must be positive")
     planned = args.per_branch_hours * len(SEEDS) * 2
     plan_total = args.quota_used_hours + args.reserved_gpu_hours + planned
-    if plan_total > 27:
-        parser.error(f"used + reserved + this batch = {plan_total:.3f}h, exceeding the 27h plan")
+    if plan_total > 30:
+        parser.error(f"used + reserved + this batch = {plan_total:.3f}h, exceeding the official 30h limit")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for micro_batch in (16, 32):
         slug = f"laya-market-gpu-fine-tune-v16-mb{micro_batch}-parallel-v8"
@@ -207,7 +207,7 @@ def main() -> int:
         (target / "kernel-metadata.json").write_text(
             json.dumps(metadata, indent=2) + "\n")
         print(f"prepared {target}")
-    print(f"quota plan: used {args.quota_used_hours:.3f} + reserved {args.reserved_gpu_hours:.3f} + batch {planned:.3f} = {plan_total:.3f}/27 GPU hours; two notebooks, two branches each at once")
+    print(f"quota plan: used {args.quota_used_hours:.3f} + reserved {args.reserved_gpu_hours:.3f} + batch {planned:.3f} = {plan_total:.3f}/30 GPU hours; two notebooks, two branches each at once")
     return 0
 
 
