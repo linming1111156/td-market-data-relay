@@ -2,13 +2,14 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
-## 当前进度（2026-11-22 18:58 UTC）
+## 当前进度（2026-11-22 19:04 UTC）
 
 - 当前待运行轮次：v50，RLCD 与 soft-ce 两个 GPU 分支。
-- Kaggle 官方额度查询（2026-11-22 18:57 UTC）：已用 0.92h，剩余 29.08/30h；刷新时间为 2026-11-28 00:00 UTC。
+- Kaggle 官方额度查询（2026-11-22 18:57 UTC）：已用 0.95h，剩余 29.05/30h；刷新时间为 2026-11-28 00:00 UTC。
 - 旧 run `372620204` 在 Relay manifest SHA 校验处退出，没有开始数据准备或微调。原因是 notebook version 2 固定了 Relay version 50 的 SHA，但实际挂载的是 version 51；这条硬性 SHA 比对已从 v50 生成器移除，运行仍会记录实际 SHA。
-- 用户登录后的 Kaggle 活动面板显示一个 `Interactive Session with GPU T4 x2` 正在运行约 10 分钟；当前可见 notebook 单元输出为 Rust 安装和 Cargo release 构建完成（41.77 秒）。Notebook 执行顺序是在 `torch.cuda.is_available()` 成功后才调用 Rust 准备脚本，故该交互会话已通过 CUDA 可用性检查并推进到数据准备构建；但尚未输出 prepared 行数或任一 loss 分支，不能记为模型微调已开始/完成。重开编辑器时页面自身会显示 `Draft Session/Starting`，以活动面板中的具体会话状态区分，不把页面初始化文案当作任务终态。
-- Kaggle 保存版本的 v3 批处理任务在活动面板与 CLI/MCP 状态中仍为 `QUEUED`；v2 也仍在队列。CLI logs 为空、MCP 输出文件为空。当前额度 0.92h，无法单凭额度归因到模型训练。此时已确认完成的微调分支为 0，尚无模型指标或准备后数据行数。不要再把 `372687004` 的 CLI 队列状态当成交互会话状态；监控实际活动的 GPU 会话和保存版本任务两条状态。
+- 用户登录后的 Kaggle 活动面板显示一个 `Interactive Session with GPU T4 x2` 正在运行约 16 分钟；notebook 单元最后可见的启动输出为 Rust 安装和 Cargo release 构建完成（41.77 秒）。
+- Kaggle `/kaggle/working` 当前可见 prepared 目录（含 `prepare-report.json`、`run.json`）、RLCD 与 soft-ce 两个目录（各含 `checkpoint/`、`run.json`、`trading-evaluation-predictions.json`），以及 27.22 kB 的配对 summary JSON。由此确认两支 GPU 运行产物已生成，但尚未读到 summary/run manifests 的训练状态与评估数值；本轮指标和完成微调计数待在 Kaggle 内核对后记录。此时不下载任何原始数据或模型产物。
+- Kaggle 保存版本的 v3 批处理任务在活动面板与 CLI/MCP 状态中仍为 `QUEUED`；v2 也仍在队列。CLI logs 为空、MCP 输出文件为空。额度为 0.95h，不能单凭额度归因到模型训练。不要把 `372687004` 的 CLI 队列状态当成交互会话状态；监控交互会话和保存版本任务两条状态。下一步在 Kaggle 侧读取既有 summary/run manifests，若二支均完成且有 CUDA 时长和冻结评估指标，则运行反馈发布器追加成熟 outcome；若目录只是未完成产物，则先继续同一轮。
 - Kaggle CLI 账号内 GPU kernel 列表只发现上述 v50 kernel；没有发现其他自有 GPU kernel 预留。配对计划总计 3 小时，额度充足。
 - Kaggle Relay 增量同步 v108 已完成并发布私有增量数据集 version 51：新增 20 个 capture ID，累计 434 个归档；`relay-increment-manifest.json` SHA-256 为 `878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e`。同步只在 Kaggle 处理数据，没有启动 CPU 微调，也没有消耗 GPU 额度。
 - 累计 paper-trade 数据集是私有 version 51，最新数据轮次为 `v105-relay-v49-15m-edge0-utcday-v1`。具体样本数以 Kaggle 内该版本的 `manifest.json` 为准；本机不下载或缓存数据文件。
