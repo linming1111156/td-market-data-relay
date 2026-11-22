@@ -146,31 +146,49 @@ raw_cache_key={
  'fee_bps_each_side':10,
  'slippage_bps_each_side':5,
  'edge_bps_round_trip':0}
-raw_cache_marker=prepared_raw/'cache-key.json'
-try:
- previous_raw_cache=json.loads(raw_cache_marker.read_text(encoding='utf-8'))
-except (OSError,ValueError):
- previous_raw_cache=None
-raw_cache_hit=(previous_raw_cache==raw_cache_key
- and (prepared_raw/'dataset'/'train.jsonl').is_file()
- and (prepared_raw/'dataset'/'evaluation.jsonl').is_file())
-if raw_cache_hit:
- print(json.dumps({'event':'relay_prepare_cache_hit','cache_key':raw_cache_key},
-  sort_keys=True),flush=True)
+cpu_prepared_candidates=[]
+for manifest_candidate in INPUT.rglob('manifest.json'):
+ try: candidate_manifest=json.loads(manifest_candidate.read_text(encoding='utf-8'))
+ except (OSError,ValueError): continue
+ candidate_root=manifest_candidate.parent
+ if (candidate_manifest.get('schema')=='td_market_data_laya_relay_prepared_manifest'
+     and (candidate_root/'train.jsonl').is_file()
+     and (candidate_root/'evaluation.jsonl').is_file()):
+  cpu_prepared_candidates.append(candidate_root)
+raw_preparation_source='gpu_session_cache_or_build'
+if cpu_prepared_candidates:
+ prepared_raw=min(cpu_prepared_candidates,key=lambda p:len(str(p)))
+ raw_preparation_source='cpu_data_preparation_kernel_output'
+ raw_cache_hit=True
+ print(json.dumps({'event':'cpu_prepared_output_reused',
+  'prepared_dir':str(prepared_raw),'candidate_count':len(cpu_prepared_candidates)},sort_keys=True),flush=True)
 else:
- shutil.rmtree(prepared_raw,ignore_errors=True)
-prepare_cmd=[sys.executable,str(ROOT/'offline_rl/scripts/laya_market_finetune.py'),
- '--archive-root',str(base),'--additional-archive-root',str(increment),
- '--additional-dataset-ref',INCREMENT_REF,'--output',str(prepared_raw),
- '--prepare-only','--workers','8','--train-fraction','0.8',
- '--decision-interval-minutes','15','--horizon-minutes','15',
- '--fee-bps-each-side','10','--slippage-bps-each-side','5','--edge-bps-round-trip','0']
-if not raw_cache_hit:
- subprocess.run(prepare_cmd,cwd=ROOT,check=True,timeout=7200)
- raw_cache_marker.write_text(json.dumps(raw_cache_key,sort_keys=True,indent=2)+'\n')
- print(json.dumps({'event':'relay_prepare_cache_created','cache_key':raw_cache_key},
-  sort_keys=True),flush=True)
-raw=prepared_raw/'dataset'
+ prepared_raw=WORK/'laya-recursive-round-raw'
+ raw_cache_marker=prepared_raw/'cache-key.json'
+ try:
+  previous_raw_cache=json.loads(raw_cache_marker.read_text(encoding='utf-8'))
+ except (OSError,ValueError):
+  previous_raw_cache=None
+ raw_cache_hit=(previous_raw_cache==raw_cache_key
+  and (prepared_raw/'dataset'/'train.jsonl').is_file()
+  and (prepared_raw/'dataset'/'evaluation.jsonl').is_file())
+ if raw_cache_hit:
+  print(json.dumps({'event':'relay_prepare_cache_hit','cache_key':raw_cache_key},
+   sort_keys=True),flush=True)
+ else:
+  shutil.rmtree(prepared_raw,ignore_errors=True)
+  prepare_cmd=[sys.executable,str(ROOT/'offline_rl/scripts/laya_market_finetune.py'),
+   '--archive-root',str(base),'--additional-archive-root',str(increment),
+   '--additional-dataset-ref',INCREMENT_REF,'--output',str(prepared_raw),
+   '--prepare-only','--workers','8','--train-fraction','0.8',
+   '--decision-interval-minutes','15','--horizon-minutes','15',
+   '--fee-bps-each-side','10','--slippage-bps-each-side','5','--edge-bps-round-trip','0']
+  subprocess.run(prepare_cmd,cwd=ROOT,check=True,timeout=7200)
+  raw_cache_marker.write_text(json.dumps(raw_cache_key,sort_keys=True,indent=2)+'\n')
+  print(json.dumps({'event':'relay_prepare_cache_created','cache_key':raw_cache_key},
+   sort_keys=True),flush=True)
+ raw=prepared_raw/'dataset'
+if raw_preparation_source=='cpu_data_preparation_kernel_output': raw=prepared_raw
 raw_manifest=json.loads((raw/'manifest.json').read_text(encoding='utf-8'))
 raw_report=json.loads((raw/'report.json').read_text(encoding='utf-8'))
 fresh_train=read_jsonl(raw/'train.jsonl'); fresh_eval=read_jsonl(raw/'evaluation.jsonl')
@@ -229,6 +247,7 @@ report={'schema':'td_market_data_laya_prepare_result','version':1,
  'fresh_relay_evaluation_overlap_rows':overlap_eval,
  'fresh_relay_evaluation_embargoed_rows':embargoed_eval,
  'raw_relay_preparation_cache_hit':raw_cache_hit,
+ 'raw_relay_preparation_source':raw_preparation_source,
  'legacy_rows_without_source_record_hash':legacy_missing_source_hash,
  'conflicting_cumulative_timestamps':len(conflicting_timestamps),
  'rejected_cumulative_rows':dict(sorted(rejected.items())),
@@ -289,6 +308,7 @@ summary={'schema':'td_market_data_laya_recursive_gpu_round','version':1,
  'actual_gpu_hours':sum(float(row.get('actual_gpu_hours') or 0) for row in branches),
  'losses':list(LOSSES),'branches':branches,'seed':SEED,
  'train_rows':len(train_rows),'evaluation_rows':len(eval_rows),
+ 'raw_preparation_source':raw_preparation_source,
  'manifest_sha256':sha256(prepared/'manifest.json')}
 summary_path=WORK/'laya-recursive-gpu-round-summary.json'
 summary_path.write_text(json.dumps(summary,ensure_ascii=False,sort_keys=True,indent=2)+'\n')
@@ -316,19 +336,16 @@ def main() -> int:
     parser.add_argument("--project-slug", required=True)
     parser.add_argument("--dataset-ref", required=True)
     parser.add_argument("--expected-feedback-round", required=True)
-    parser.add_argument("--experience-manifest-sha256", required=True)
+    parser.add_argument("--experience-manifest-sha256", default="",
+                        help="Optional source digest for the run notes; actual digest is read in Kaggle")
     parser.add_argument("--capture-increment-ref", required=True)
-    parser.add_argument("--relay-manifest-sha256", required=True)
+    parser.add_argument("--relay-manifest-sha256", default="",
+                        help="Optional source digest for the run notes; actual digest is read in Kaggle")
     parser.add_argument("--seed", type=int, default=20261123)
     parser.add_argument("--quota-used-hours", required=True, type=float)
     parser.add_argument("--reserved-gpu-hours", required=True, type=float)
     parser.add_argument("--plan-hours", type=float, default=1.5)
     args = parser.parse_args()
-    for name, value in (("experience manifest", args.experience_manifest_sha256),
-                        ("Relay manifest", args.relay_manifest_sha256)):
-        digest = value.lower()
-        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-            parser.error(f"{name} SHA-256 must be 64 hexadecimal characters")
     if not math.isfinite(args.quota_used_hours) or not 0 <= args.quota_used_hours <= 30:
         parser.error("quota used hours must be within 0..30")
     if not math.isfinite(args.reserved_gpu_hours) or args.reserved_gpu_hours < 0:
@@ -383,7 +400,8 @@ def main() -> int:
         "is_private":True,"enable_gpu":True,"enable_tpu":False,"enable_internet":True,
         "keywords":["laya","gpu","recursive-fine-tuning"],
         "dataset_sources":[args.dataset_ref,BASE_CAPTURE_DATASET,args.capture_increment_ref],
-        "kernel_sources":[],"competition_sources":[],"model_sources":[],
+        "kernel_sources":["minglinl99/laya-cpu-data-preparation"],
+        "competition_sources":[],"model_sources":[],
         "machine_shape":"NvidiaTeslaT4"}
     (target/"kernel-metadata.json").write_text(json.dumps(metadata,indent=2)+"\n")
     print(f"prepared {target}")

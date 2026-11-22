@@ -12,9 +12,14 @@
 - v51 递归构建器曾因行级 source hash 条件排除 1,007 条累计行，直接缩小了训练样本。现已删除该行级 hash 过滤；这类 SHA 只保留为运行报告中的来源记录。
 - Kaggle Relay 同步 kernel v109 已完成，发布 Relay increment version 52：新增 46 个 capture ID，累计 481 个归档；manifest SHA-256 为 `e5371f09ea520b51fe3191fddc2e41988ace8a0233980b9aaa46f2c87cee4466`。原始行情只留 Kaggle。
 - 递归轮次 v52 的 notebook version 5 因 Relay manifest SHA 不匹配而在训练前失败；version 6 排队后被取消（`CANCEL_ACKNOWLEDGED`），都没有开始微调或消耗本轮 GPU 额度。已移除生成器中对累计集、Relay 清单与行级哈希的硬性相等校验，时间戳冲突样本改为跳过，不再因单行冲突终止整轮。
-- 修正版已更新到既有 GPU notebook `minglinl99/laya-gpu-loss-ablation-capture-v50` 的 version 7，保持 T4 GPU。CLI 提交的批任务经网页 Active Events 确认排队后已取消，随后在用户打开的同 notebook Draft Session 中运行当前单元；网页显示 `GPU T4 x2 On`。Relay 数据准备完成，RLCD 分支已训练 1 epoch，mean loss 1.7998；两支均使用 945 训练行、105 校准行、20 留出行并输出了评估表。Notebook 单元仍在运行/收尾，完整分支指标与 summary 尚待读取。
-- Kaggle 官方 GPU 额度（2026-11-23）：最近查询已用 2.95h，剩余 27.05/30h，刷新时间 2026-11-28 00:00 UTC。额度充足，GPU 优先。
-- 后续每一轮微调都更新这一个既有 GPU notebook 的版本，不新建按轮次命名的 GPU notebook；CPU 只用于必要的数据同步和发布，不用于模型微调。当前下一步是从正在运行的网页 session 读取完整指标和 summary，再冻结并发布评估反馈。
+- 递归轮次 v52 已在 T4 上完成 RLCD、soft-ce 两支训练和 20 条冻结留出评估：945 条训练、105 条校准；GPU 时间分别为 0.022042h、0.019862h（合计 0.041904h）。两支均预测 short，费用后净 PnL -601.234 bps，accuracy 5%、balanced accuracy 33.33%、macro-F1 0.03175；Brier 从 0.7969 降至 0.6961/0.6912，ECE 从 0.4159 降至 0.3198/0.3143。留出样本只有 20 条，交易效果仍差，校准改善不足以证明策略变好。
+- v52 的成熟真实 outcome 与逐样本预测已发布到累计 paper-trade dataset version 54；Kaggle MCP 当前确认 version 54 为 Ready，notes 为 `Add verified GPU model evaluation gpu-recursive-round-v52`。累计行数尚未通过 Kaggle 内摘要核实，不填写推测数值。Relay 输入当前为 `td-market-vps-captures` version 1 与 `td-market-vps-captures-increment-20261120` version 52。
+- 用户删除了先前 Kaggle notebooks。Kaggle CLI 的 `kernels list --mine` 曾确认无项目；现已按用户要求重建独立项目。CPU 数据准备 version 2 已开始运行；GPU 递归微调 version 2、VPS Relay 同步 version 1、结果反馈 version 2 已保存。
+- GPU 项目固定为 `minglinl99/laya-gpu-finetune`，每轮继续推送到同一个项目。notebook 已拆为 GPU 环境、CPU 准备数据读取/缓存、RLCD、soft-ce、汇总单元；metadata 请求 T4 x2 并挂载累计体验数据、Relay captures 与 CPU 准备项目输出。已保存未运行 GPU 项目，尚未消耗本轮训练额度。
+- CPU 准备项目为 `minglinl99/laya-cpu-data-preparation`：在 Kaggle CPU 上生成 Relay 训练/评估数据并缓存，运行产物留在 Kaggle，供 GPU notebook 作为 kernel input 读取。当前 version 2 运行状态为 `RUNNING`；训练仍未开始。
+- VPS 远端同步项目为 `minglinl99/laya-kaggle-relay-increment-sync-main`，启用 Internet、挂载既有增量集和私有 Relay 配置；首次仅保存 version 1，没有运行或发布数据。反馈项目为 `minglinl99/laya-model-feedback-gpu-recursive-round-v53`，挂载 GPU 输出与累计数据集；仅在 GPU 评估冻结且真实 outcome 成熟后运行发布。
+- Kaggle 官方 GPU 额度（2026-11-23 最近查询）：已用 3.58h，剩余 26.42/30h，刷新时间 2026-11-28 00:00 UTC。CPU 准备阶段不占用 GPU；GPU 项目目前未运行。
+- 下一步：等待并确认 CPU version 2 的准备产物已作为 Kaggle kernel output 发布；然后在 GPU 项目逐 cell 运行 RLCD 和 soft-ce，冻结留出指标，再启动反馈项目回灌成熟 outcome。
 - Relay 的 CPU 归档准备结果缓存于 Kaggle `/kaggle/working`，相同挂载输入与参数在同一 live session 重跑时复用；输入变化或缓存不可读时自动重建，不因缓存状态中止。所有缓存数据留在 Kaggle。
 ## 当前实现入口
 
@@ -24,10 +29,11 @@
 | `scripts/laya_market_finetune.py` | 在 Kaggle 校验输入、准备/读取切分、微调 Laya 并评估留出数据 |
 | `scripts/build_laya_kaggle_model_feedback.py` | 冻结评估后在 Kaggle 内核验逐样本预测与成熟真实 outcome，并发布累计数据集新版 |
 | `scripts/build_laya_kaggle_recursive_iteration.py` | 将累计真实标签与新 Relay 时间段组合，再启动下一轮双分支 GPU 微调 |
+| `scripts/build_laya_kaggle_cpu_data_preparation.py` | 在 Kaggle CPU 项目准备 Relay 时间切分数据并复用 session 缓存，供 GPU notebook 挂载 |
 | `bulk_engine/src/laya_prepare.rs` | 从 Relay capture 生成时间排序的训练集与评估集 |
 | `scripts/build_laya_kaggle_paper_trade_dataset.py` | 从固定的历史 v24 运行构建 v31 paper-trade 回放数据；它不是当前 v50 模型结果的自动追加器，也不负责训练模型 |
 
-递归轮次生成到原有 GPU notebook 时，按环境/GPU、缓存数据准备、RLCD 微调、soft-ce 微调、结果汇总拆成独立 code cells。各阶段实时打印开始/完成事件和可用指标；若单支出错，可从对应分支单元继续，不必重做已完成的缓存准备。运行仍限定在现有 GPU notebook，不创建轮次专属 notebook。
+项目按职责分为 CPU 数据准备、GPU 递归微调、VPS Relay 同步、GPU 评估结果反馈。GPU 微调使用固定项目 `laya-gpu-finetune`，每轮更新其版本；notebook 按 GPU 环境、准备数据读取/缓存、RLCD、soft-ce、结果汇总拆成独立 code cells。各训练分支实时输出开始/完成事件和指标；若单支失败，可从该分支单元继续。模型微调始终使用 Kaggle GPU。
 
 ## v50 配对实验（已完成，作为迭代基准）
 
@@ -72,7 +78,7 @@ uvx --from kaggle --with six kaggle kernels logs \
 
 每个分支在 Kaggle `/kaggle/working` 下分别保留 checkpoint、`run.json` 和日志；评估预测保存为 `trading-evaluation-predictions.json`。`run.json` 持久化 `runtime_probe`（CUDA 是否可用、设备数、GPU 型号和选择设备）及额度门槛；顶层 summary 记录数据 manifest SHA、GPU 型号、配置、每支训练与评估指标、实际 GPU 小时和 `run.json` SHA。核心评估包括 accuracy、balanced accuracy、macro-F1、混淆矩阵、交易数、总费用、费用后净 PnL、单决策净 PnL、最大回撤和按时间切分的结果。运行状态或训练失败时，区分“未训练”“分支失败”和“已完成训练”，不得把准备成功当成训练成功。
 
-训练结果冻结后才能用 held-out 标签。反馈发布器会输出新版 manifest SHA 和累计记录数，递归微调生成器要求该 SHA 与预期反馈轮次完全匹配。v50 已完成 CUDA 训练、冻结评估、反馈发布和数据集 version 52 发布；递归 GPU kernel v51 已提交，等待其日志确认数据准备与 GPU 分配。后续仍需每轮检查实际运行证据。
+训练结果冻结后才能用 held-out 标签。反馈发布器会输出新版 manifest SHA 和累计记录数；递归生成器在 Kaggle 内读取并记录输入实际 SHA，不把预先抄录的 SHA 或轮次名作为启动条件。v52 已完成 CUDA 训练、冻结评估和数据集 version 54 发布。每轮仍需记录实际 CUDA 与训练结果。
 
 运行数据仅留 Kaggle。用 bounded logs 查看运行进度与摘要；不要下载 notebook outputs、原始行情、准备后的样本或 checkpoint 到本机。
 
@@ -89,7 +95,7 @@ uvx --from kaggle --with six kaggle kernels logs \
 
 若当前 kernel 仍为 `QUEUED`，继续监控同一 kernel；不得重复提交同一轮，也不得把等待当成训练完成。额度充足时继续排队/运行 GPU 主线，不启动 CPU 微调。
 
-## v50 完成时已执行的发布顺序（留作参考）
+## 在既有 GPU notebook 上启动下一轮
 
 v50 完成且两支都通过 CUDA 与冻结评估核验后，在 Kaggle 内运行反馈发布器：
 
@@ -99,20 +105,18 @@ uvx --from kaggle --with six kaggle kernels push -p \
   /tmp/kaggle-kernels/laya-model-feedback-gpu-loss-ablation-capture-v50
 ```
 
-从反馈 kernel 的最终 JSON 输出读取累计行数和实际 manifest SHA（仅用于记录）。以反馈轮次、最新累计数据集和 Relay 数据集生成递归配对 kernel；刷新官方 GPU 额度后，在同一个 GPU notebook 上更新版本。递归生成器跳过不可用记录和重叠时间戳，保留 15 分钟标签期限与时间隔离，再启动 RLCD/soft-ce 两支 GPU 训练。
+累计数据 version 54 和 Relay increment version 52 已确认发布。刷新官方 GPU 额度并确认没有其他运行占用后，以原 notebook slug 生成分段版本；摘要从 Kaggle 输入直接记录清单 SHA，无需先复制 SHA 到命令行。推送仍指向原 GPU notebook，不创建轮次专属 notebook。准备、RLCD、soft-ce 和汇总各自独立成 cell。
 
 ```sh
 python3 offline_rl/scripts/build_laya_kaggle_recursive_iteration.py \
   --output-dir /tmp/kaggle-kernels \
-  --project-slug laya-gpu-recursive-round-v51 \
+  --project-slug laya-gpu-loss-ablation-capture-v50 \
   --dataset-ref minglinl99/laya-market-paper-trade-experience \
-  --expected-feedback-round gpu-loss-ablation-capture-v50 \
-  --experience-manifest-sha256 PUBLISHED_EXPERIENCE_MANIFEST_SHA256 \
+  --expected-feedback-round gpu-recursive-round-v52 \
   --capture-increment-ref minglinl99/td-market-vps-captures-increment-20261120 \
-  --relay-manifest-sha256 878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e \
   --quota-used-hours FRESH_USED_HOURS_FROM_QUOTA \
   --reserved-gpu-hours VERIFIED_OTHER_GPU_RESERVATIONS
 
 uvx --from kaggle --with six kaggle kernels push \
-  -p /tmp/kaggle-kernels/laya-gpu-recursive-round-v51
+  -p /tmp/kaggle-kernels/laya-gpu-loss-ablation-capture-v50
 ```
