@@ -2,12 +2,13 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
-## 当前进度（2026-11-22 17:03 UTC）
+## 当前进度（2026-11-22 18:54 UTC）
 
 - 当前待运行轮次：v50，RLCD 与 soft-ce 两个 GPU 分支。
-- Kaggle 官方额度查询（2026-11-22 17:02 UTC）：已用 0.44h，剩余 29.56/30h；刷新时间为 2026-11-28 00:00 UTC。
+- Kaggle 官方额度查询（2026-11-22 18:54 UTC）：已用 0.87h，剩余 29.13/30h；刷新时间为 2026-11-28 00:00 UTC。
 - 旧 run `372620204` 在 Relay manifest SHA 校验处退出，没有开始数据准备或微调。原因是 notebook version 2 固定了 Relay version 50 的 SHA，但实际挂载的是 version 51；这条硬性 SHA 比对已从 v50 生成器移除，运行仍会记录实际 SHA。
-- 修正后的 run `372687004` 仍处于等待：Kaggle CLI 与 MCP 在 17:02 UTC 都返回 `QUEUED`，CLI 日志为空，MCP 未发现输出文件。额度较上一轮查询增加到 0.44h，但当前没有 CUDA/训练日志，不能据此认定模型已开始训练；本轮已完成微调数为 0，尚无效果指标或准备后数据行数。
+- 用户登录后的 Kaggle 活动面板显示一个 `Interactive Session with GPU T4 x2` 正在运行约 8 分钟；当前可见 notebook 单元输出为 Rust 安装和 Cargo release 构建完成（41.77 秒）。页面上方仍标为 Draft Session/Starting，尚未看到 CUDA 检测、prepared 行数或任一 loss 分支输出，因此只能确认 GPU 交互会话与数据准备构建阶段活动，不能记为微调已开始/完成。
+- Kaggle 保存版本的 v3 批处理任务在活动面板与 CLI/MCP 状态中仍为 `QUEUED`；v2 也仍在队列。CLI logs 为空、MCP 输出文件为空。当前额度从此前 0.46h 升至 0.87h，无法单凭额度归因到训练。此时已确认完成的微调分支为 0，尚无模型指标或准备后数据行数。不要再把 `372687004` 的 CLI 队列状态当成交互会话状态；监控实际活动的 GPU 会话和保存版本任务两条状态。
 - Kaggle CLI 账号内 GPU kernel 列表只发现上述 v50 kernel；没有发现其他自有 GPU kernel 预留。配对计划总计 3 小时，额度充足。
 - Kaggle Relay 增量同步 v108 已完成并发布私有增量数据集 version 51：新增 20 个 capture ID，累计 434 个归档；`relay-increment-manifest.json` SHA-256 为 `878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e`。同步只在 Kaggle 处理数据，没有启动 CPU 微调，也没有消耗 GPU 额度。
 - 累计 paper-trade 数据集是私有 version 51，最新数据轮次为 `v105-relay-v49-15m-edge0-utcday-v1`。具体样本数以 Kaggle 内该版本的 `manifest.json` 为准；本机不下载或缓存数据文件。
