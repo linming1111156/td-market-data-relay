@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kaggle Workflow"
+  short_description: "Use Kaggle CLI and MCP with GPU-first quota-aware execution"
+  default_prompt: "Use the Kaggle workflow skill for this task."
