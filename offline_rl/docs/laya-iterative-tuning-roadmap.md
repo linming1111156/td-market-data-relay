@@ -2,19 +2,18 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
-## 当前进度（2026-11-22 16:45 UTC）
+## 当前进度（2026-11-22 17:03 UTC）
 
 - 当前待运行轮次：v50，RLCD 与 soft-ce 两个 GPU 分支。
-- Kaggle 官方额度查询：已用 0.10h，剩余 29.90/30h；刷新时间为 2026-11-28 00:00 UTC。
-- Kaggle run `372620204` 已启动 Python runtime，但在 manifest SHA 校验处退出；没有开始 Rust 数据准备或任一模型分支微调。官方累计 GPU 使用量从 0.07h 变为 0.10h；尚无模型效果。
-- CLI/MCP 当前仍返回 `QUEUED`，而用户从 Kaggle run 页面观察到 `RuntimeError`；run 输出链接仍指向 `372620204`，kernel files 为空。状态接口与 run 页面存在不一致，后续以新 run 的明确 CUDA/分支日志为准。
+- Kaggle 官方额度查询（2026-11-22 17:02 UTC）：已用 0.44h，剩余 29.56/30h；刷新时间为 2026-11-28 00:00 UTC。
+- 旧 run `372620204` 在 Relay manifest SHA 校验处退出，没有开始数据准备或微调。原因是 notebook version 2 固定了 Relay version 50 的 SHA，但实际挂载的是 version 51；这条硬性 SHA 比对已从 v50 生成器移除，运行仍会记录实际 SHA。
+- 修正后的 run `372687004` 仍处于等待：Kaggle CLI 与 MCP 在 17:02 UTC 都返回 `QUEUED`，CLI 日志为空，MCP 未发现输出文件。额度较上一轮查询增加到 0.44h，但当前没有 CUDA/训练日志，不能据此认定模型已开始训练；本轮已完成微调数为 0，尚无效果指标或准备后数据行数。
 - Kaggle CLI 账号内 GPU kernel 列表只发现上述 v50 kernel；没有发现其他自有 GPU kernel 预留。配对计划总计 3 小时，额度充足。
 - Kaggle Relay 增量同步 v108 已完成并发布私有增量数据集 version 51：新增 20 个 capture ID，累计 434 个归档；`relay-increment-manifest.json` SHA-256 为 `878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e`。同步只在 Kaggle 处理数据，没有启动 CPU 微调，也没有消耗 GPU 额度。
 - 累计 paper-trade 数据集是私有 version 51，最新数据轮次为 `v105-relay-v49-15m-edge0-utcday-v1`。具体样本数以 Kaggle 内该版本的 `manifest.json` 为准；本机不下载或缓存数据文件。
 - `scripts/build_laya_kaggle_model_feedback.py` 已准备在 Kaggle 内核中核验完成分支、冻结评估与成熟 outcome，并发布累计数据集新版本；必须等 v50 有真实 CUDA 训练和冻结评估证据后才能运行。
 - `scripts/build_laya_kaggle_recursive_iteration.py` 已实现下一轮的数据合并与配对 GPU 微调路径：训练标签只取累计集里通过校验的成熟真实 outcome；新留出集只取新 Relay 数据里晚于所有训练时间加 15 分钟期限的样本；RLCD 与 soft-ce 复用同一冻结切分。尚未在 Kaggle 运行，必须等 v50 评估与反馈数据集新版本发布后再生成并提交该 kernel。
-- 失败根因已确认：kernel version 2 固定了 Relay version 50 SHA `4e84be91787cef52499be3941ede0a77af6f6a517dac4962ec0111e1a01b222c`，实际挂载的是 version 51，SHA 为 `878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e`。这不是 GPU 配额耗尽或 CUDA 训练失败。
-- 生成器现在记录本次实际挂载的 Relay manifest SHA 和准备数据的行数，不再因生成时填写的旧 SHA 或我添加的报告/行数/跳过项校验而中止。原有微调脚本仍按其既有流程读取输入并使用时间切分。
+- SHA 错误不是 GPU 配额耗尽或 CUDA 训练失败。当前 kernel v3 已无生成时旧 SHA 的硬性比较；后续只根据同一 run 的设备和分支日志判断训练是否发生，不重复提交仍在 `QUEUED` 的 v50。
 
 当前工作队列只有 GPU 主线和必要的 Kaggle 数据版本衔接；不排队任何 CPU 微调或 CPU 基线任务。CPU 相关脚本和旧实验记录是历史材料，不是待办项。只在官方 GPU 额度耗尽，或 Kaggle 明确拒绝 GPU/CUDA 且有运行日志证据时，才考虑 GPU 任务的 CPU 回退。
 
