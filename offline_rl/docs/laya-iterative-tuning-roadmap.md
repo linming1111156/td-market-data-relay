@@ -2,24 +2,15 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
-## 当前进度（2026-11-22 19:53 UTC）
+## 当前进度（2026-11-22 20:19 UTC）
 
-- 当前待运行轮次：v50，RLCD 与 soft-ce 两个 GPU 分支。
-- Kaggle 官方额度查询（2026-11-22 19:53 UTC）：已用 1.98h，剩余 28.02/30h；刷新时间为 2026-11-28 00:00 UTC。
-- 旧 run `372620204` 在 Relay manifest SHA 校验处退出，没有开始数据准备或微调。原因是 notebook version 2 固定了 Relay version 50 的 SHA，但实际挂载的是 version 51；这条硬性 SHA 比对已从 v50 生成器移除，运行仍会记录实际 SHA。
-- 早先的 Kaggle 交互会话只读摘要曾记录 846 训练行、204 评估行、Tesla T4，以及 RLCD/soft-ce 两支 `complete`（各 0.035250/0.033591 GPU 小时）；这是那次会话的历史证据，不能视为当前 Draft Session 的文件可用性证明。
-- 2026-11-22 19:53 UTC 的账号活动面板仍显示 `Interactive Session with GPU T4 x2` 运行约 1 小时；保存版 v3 已取消。官方 CLI 已提交修复版 v4，状态为 `QUEUED`，logs 为空。GPU quota 为已用 1.98h、剩余 28.02h。活动面板 Output 区仍列出 3.2 GiB 旧产物；当前 Draft Session 不能读取这些文件，不能把旧 Output 面板当作当前运行目录。
-- 旧 Draft Session 的训练单元在数据准备时因 `/kaggle/working/laya-market-gpu-loss-ablation-v50-prepared` 已存在而退出，错误是 `output must be a new directory outside the repository`，不是 CUDA 错误。为保留旧目录与 checkpoint，代码和新提交的 v4 使用 `retry1-prepared` 与 `retry1-{loss}` 新目录。v4 仍排队，尚无本轮微调；额度变化暂不能归为训练。
-- 反馈发布器 kernel v1 的 Kaggle 日志确认失败于 `expected one source kernel summary; found 0`；反馈 kernel 没有挂载已完成的 v50 kernel 输出。没有发布 paper-trade experience 新版本。必须先让一个 v50 GPU kernel 实际完成并发布输出，再运行反馈发布器；当前本轮微调与数据闭环尚未完成。
-- Kaggle CLI 账号内 GPU kernel 列表只发现上述 v50 kernel；没有发现其他自有 GPU kernel 预留。配对计划总计 3 小时，额度充足。
-- Kaggle Relay 增量同步 v108 已完成并发布私有增量数据集 version 51：新增 20 个 capture ID，累计 434 个归档；`relay-increment-manifest.json` SHA-256 为 `878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e`。同步只在 Kaggle 处理数据，没有启动 CPU 微调，也没有消耗 GPU 额度。
-- 累计 paper-trade 数据集是私有 version 51，最新数据轮次为 `v105-relay-v49-15m-edge0-utcday-v1`。具体样本数以 Kaggle 内该版本的 `manifest.json` 为准；本机不下载或缓存数据文件。
-- `scripts/build_laya_kaggle_model_feedback.py` 已准备在 Kaggle 内核中核验完成分支、冻结评估与成熟 outcome，并发布累计数据集新版本；必须等 v50 有真实 CUDA 训练和冻结评估证据后才能运行。
-- `scripts/build_laya_kaggle_recursive_iteration.py` 已实现下一轮的数据合并与配对 GPU 微调路径：训练标签只取累计集里通过校验的成熟真实 outcome；新留出集只取新 Relay 数据里晚于所有训练时间加 15 分钟期限的样本；RLCD 与 soft-ce 复用同一冻结切分。尚未在 Kaggle 运行，必须等 v50 评估与反馈数据集新版本发布后再生成并提交该 kernel。
-- SHA 错误不是 GPU 配额耗尽或 CUDA 训练失败。当前 kernel v3 已无生成时旧 SHA 的硬性比较；后续只根据同一 run 的设备和分支日志判断训练是否发生，不重复提交仍在 `QUEUED` 的 v50。
-
-当前工作队列只有 GPU 主线和必要的 Kaggle 数据版本衔接；不排队任何 CPU 微调或 CPU 基线任务。CPU 相关脚本和旧实验记录是历史材料，不是待办项。只在官方 GPU 额度耗尽，或 Kaggle 明确拒绝 GPU/CUDA 且有运行日志证据时，才考虑 GPU 任务的 CPU 回退。
-
+- v50 的 RLCD 与 soft-ce 两个分支均已在 Tesla T4 上完成微调和同一冻结留出集评估：各 753 训练行、203 评估行；实际 GPU 时间分别为 0.032350h、0.029335h。两支准确率均为 15.27%、balanced accuracy 33.33%、macro-F1 0.0883；预测全为 short，203 笔交易的费用后净 PnL 均为 -6394.925 bps。校准后 Brier 从 0.7593 降至约 0.6833、ECE 从约 0.312 降至约 0.212，但交易效果仍不合格，下一轮需继续改进。
+- v50 评估结果已通过 Kaggle feedback kernel v3 入库：累计 paper-trade dataset 私有 version 52，累计 1,153 条（1,138 条有效、15 条无效），本轮新增 131 条决策记录；两分支各有 203 条逐样本预测与成熟 outcome。发布 manifest SHA-256：`77e0cb652577437c13b363caa5bc31743434371851c90e0a22957de6b18ee3c1`。原始行情与完整运行产物仍留在 Kaggle。
+- feedback v2 失败原因已修复：历史累计集存在重复时间戳 `1795198560000`，早期重复样本被标记为无效；时间戳并非唯一键。发布器现按时间戳分组，并用原始 source record 内容匹配，保留历史记录与唯一 sample ID，不因无关的历史重复记录中止。
+- 下一轮 `laya-gpu-recursive-round-v51` kernel version 1 已提交，当前状态为 `RUNNING`；截至本次查询尚无日志，因此数据准备和 CUDA 分配都未确认，不报告为已开始训练。计划 RLCD 与 soft-ce 各 1.5 GPU 小时，共 3 小时。
+- Kaggle 官方额度（2026-11-22 20:19 UTC）：已用 2.45h，剩余 27.55/30h，2026-11-28 00:00 UTC 刷新。检查账号 GPU kernels 后未发现其他仍在运行或排队的 GPU kernel；v50 已取消，历史 GPU 任务已结束。新轮次状态为 `RUNNING` 但无日志，额度变化暂不归因于训练。额度充足，继续 GPU 优先。
+- 下一轮固定输入：累计 experience version 52（上列 SHA）；Relay increment version 51，`relay-increment-manifest.json` SHA-256 为 `878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e`。反馈前累计轮次为 `v105-relay-v49-15m-edge0-utcday-v1`。
+- 当前工作队列是已提交的递归 GPU 轮次。不得启动 CPU 微调；只有官方 GPU 额度耗尽或 Kaggle 明确拒绝 GPU/CUDA 并有运行日志，才允许回退。
 ## 当前实现入口
 
 | 文件 | 用途 |
@@ -31,9 +22,9 @@
 | `bulk_engine/src/laya_prepare.rs` | 从 Relay capture 生成时间排序的训练集与评估集 |
 | `scripts/build_laya_kaggle_paper_trade_dataset.py` | 从固定的历史 v24 运行构建 v31 paper-trade 回放数据；它不是当前 v50 模型结果的自动追加器，也不负责训练模型 |
 
-## 当前配对实验
+## v50 配对实验（已完成，作为迭代基准）
 
-生成器的默认目标为 `minglinl99/laya-gpu-loss-ablation-capture-v50`。它创建私有 notebook，启用 GPU 与 Internet，设置 `NvidiaTeslaT4`，并挂载两个冻结的 Relay capture datasets。生成器把当前仓库里的 Rust 源码和微调脚本嵌入 notebook，因此 notebook 运行时不依赖本机工作区。
+生成器的目标为 `minglinl99/laya-gpu-loss-ablation-capture-v50`。它创建私有 notebook，启用 GPU 与 Internet，设置 `NvidiaTeslaT4`，并挂载两个冻结的 Relay capture datasets。生成器把当前仓库里的 Rust 源码和微调脚本嵌入 notebook，因此 notebook 运行时不依赖本机工作区。
 
 该轮固定 15 分钟决策间隔、15 分钟标签期限、edge 0 bps、训练比例 80%、encoder 冻结、micro-batch 16、gradient accumulation 8、1 epoch、seed 20261122；只比较 `rlcd` 和 `soft-ce`。每支默认计划上限 1.5 GPU 小时，配对总计划 3 小时。Notebook 记录实际 Relay manifest SHA、训练和评估行数及标签计数；两支复用同一数据切分。
 
@@ -74,7 +65,7 @@ uvx --from kaggle --with six kaggle kernels logs \
 
 每个分支在 Kaggle `/kaggle/working` 下分别保留 checkpoint、`run.json` 和日志；评估预测保存为 `trading-evaluation-predictions.json`。`run.json` 持久化 `runtime_probe`（CUDA 是否可用、设备数、GPU 型号和选择设备）及额度门槛；顶层 summary 记录数据 manifest SHA、GPU 型号、配置、每支训练与评估指标、实际 GPU 小时和 `run.json` SHA。核心评估包括 accuracy、balanced accuracy、macro-F1、混淆矩阵、交易数、总费用、费用后净 PnL、单决策净 PnL、最大回撤和按时间切分的结果。运行状态或训练失败时，区分“未训练”“分支失败”和“已完成训练”，不得把准备成功当成训练成功。
 
-训练结果冻结后才能用 held-out 标签。反馈发布器会输出新版 manifest SHA 和累计记录数，递归微调生成器要求该 SHA 与预期反馈轮次完全匹配。两个生成器尚未通过 v50 实际输出完成端到端运行；在获得 Kaggle 运行证据前，不得把反馈闭环报告为已完成。
+训练结果冻结后才能用 held-out 标签。反馈发布器会输出新版 manifest SHA 和累计记录数，递归微调生成器要求该 SHA 与预期反馈轮次完全匹配。v50 已完成 CUDA 训练、冻结评估、反馈发布和数据集 version 52 发布；递归 GPU kernel v51 已提交，等待其日志确认数据准备与 GPU 分配。后续仍需每轮检查实际运行证据。
 
 运行数据仅留 Kaggle。用 bounded logs 查看运行进度与摘要；不要下载 notebook outputs、原始行情、准备后的样本或 checkpoint 到本机。
 
@@ -91,7 +82,7 @@ uvx --from kaggle --with six kaggle kernels logs \
 
 若当前 kernel 仍为 `QUEUED`，继续监控同一 kernel；不得重复提交同一轮，也不得把等待当成训练完成。额度充足时继续排队/运行 GPU 主线，不启动 CPU 微调。
 
-## 当前轮完成后的提交顺序
+## v50 完成时已执行的发布顺序（留作参考）
 
 v50 完成且两支都通过 CUDA 与冻结评估核验后，在 Kaggle 内运行反馈发布器：
 
