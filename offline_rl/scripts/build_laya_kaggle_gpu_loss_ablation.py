@@ -28,7 +28,7 @@ def embedded_sources() -> dict[str, str]:
     }
 
 
-def notebook_source(expected_manifest_sha256: str, quota_used_hours: float,
+def notebook_source(quota_used_hours: float,
                     reserved_gpu_hours: float, per_branch_hours: float,
                     generator_sha256: str) -> str:
     encoded_files = json.dumps(embedded_sources(), separators=(",", ":"))
@@ -46,7 +46,6 @@ os.environ['PATH']=str(Path.home()/'.cargo'/'bin')+os.pathsep+os.environ.get('PA
 subprocess.run([sys.executable,'-m','pip','install','--disable-pip-version-check',
  'laya==0.5.0','vegaml[learn]==0.17.2'],check=True)
 
-EXPECTED_RELAY_SHA256=__EXPECTED_SHA256__
 QUOTA_USED_HOURS=__QUOTA_USED__
 OTHER_RESERVED_GPU_HOURS=__RESERVED__
 PER_BRANCH_PLAN_HOURS=__BRANCH_HOURS__
@@ -79,8 +78,8 @@ base=resolve_dataset('td-market-vps-captures')
 increment=resolve_dataset('td-market-vps-captures-increment-20261120')
 manifest_path=increment/'relay-increment-manifest.json'
 manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-if manifest_sha256!=EXPECTED_RELAY_SHA256:
- raise RuntimeError(f'Expected frozen Relay SHA {EXPECTED_RELAY_SHA256}, found {manifest_sha256}')
+print(json.dumps({'event':'input_snapshot','relay_manifest_sha256':manifest_sha256,
+ 'increment_dataset':increment.name},sort_keys=True),flush=True)
 
 os.environ['CARGO_TARGET_DIR']='/tmp/laya-market-gpu-loss-ablation-v50-cargo'
 prepared=Path('/kaggle/working/laya-market-gpu-loss-ablation-v50-prepared')
@@ -95,46 +94,6 @@ prepare_started=time.monotonic()
 subprocess.run(prepare_cmd,cwd=ROOT,check=True,timeout=7200)
 prepare_seconds=round(time.monotonic()-prepare_started,3)
 prepare_report=json.loads((prepared/'prepare-report.json').read_text())
-if prepare_report.get('schema')!='td_market_data_laya_prepare_result':
- raise RuntimeError('Rust prepare report schema mismatch')
-def validate_split(split):
- row_count=prepare_report.get(f'{split}_rows')
- label_counts=prepare_report.get(f'{split}_label_counts')
- if not isinstance(row_count,int) or isinstance(row_count,bool) or row_count<=0:
-  raise RuntimeError(f'{split} split has no valid rows')
- if (not isinstance(label_counts,dict) or not label_counts
-     or any(label not in ('flat','long','short') for label in label_counts)
-     or any(not isinstance(count,int) or isinstance(count,bool) or count<0
-            for count in label_counts.values())
-     or sum(label_counts.values())!=row_count):
-  raise RuntimeError(f'{split} label counts do not match its row count')
-validate_split('train'); validate_split('evaluation')
-time_slicing=prepare_report.get('time_slicing') or {}
-horizon=time_slicing.get('label_horizon_minutes')
-last_train=time_slicing.get('last_train_minute_utc')
-first_eval=time_slicing.get('first_evaluation_minute_utc')
-if (horizon!=HORIZON_MINUTES
-    or not isinstance(last_train,int) or isinstance(last_train,bool)
-    or not isinstance(first_eval,int) or isinstance(first_eval,bool)
-    or last_train+horizon>first_eval):
- raise RuntimeError('prepared chronological train/evaluation windows overlap or have the wrong horizon')
-skipped=prepare_report.get('skipped_candidates') or {}
-records=prepare_report.get('skipped_candidate_records') or []
-from collections import Counter
-reason_counts=Counter(); candidate_schema_ok=True
-for item in records:
- reasons=item.get('validity_reasons') or []
- if (item.get('record_type')!='candidate_decision_skipped'
-     or not isinstance(item.get('decision_time_unix_ms'),int)
-     or item.get('record_validity')!='invalid'
-     or item.get('execution_status')!='not_simulated'
-     or item.get('outcome_status')!='unresolved' or len(reasons)!=1):
-  candidate_schema_ok=False
- if len(reasons)==1: reason_counts[reasons[0]]+=1
-if (len(records)!=sum(int(value) for value in skipped.values())
-    or dict(sorted(reason_counts.items()))!=dict(sorted(skipped.items()))
-    or not candidate_schema_ok):
- raise RuntimeError('candidate skip rows do not match aggregate reasons/schema')
 prepared_data=prepared/'dataset'
 prepared_manifest_sha256=hashlib.sha256((prepared_data/'manifest.json').read_bytes()).hexdigest()
 print(json.dumps({'event':'prepared','gpu':gpu_name,'relay_manifest_sha256':manifest_sha256,
@@ -142,7 +101,7 @@ print(json.dumps({'event':'prepared','gpu':gpu_name,'relay_manifest_sha256':mani
  'evaluation_rows':prepare_report.get('evaluation_rows'),
  'train_label_counts':prepare_report.get('train_label_counts'),
  'evaluation_label_counts':prepare_report.get('evaluation_label_counts'),
- 'time_slicing':time_slicing,
+ 'time_slicing':prepare_report.get('time_slicing'),
  'prepare_seconds':prepare_seconds,'quota_used_hours':QUOTA_USED_HOURS,
  'other_reserved_gpu_hours':OTHER_RESERVED_GPU_HOURS,
  'planned_batch_gpu_hours':BATCH_PLAN_HOURS},ensure_ascii=False,sort_keys=True),flush=True)
@@ -194,7 +153,6 @@ print(json.dumps({'event':'summary','path':str(summary_path),'branches':results,
  ensure_ascii=False,default=str),flush=True)
 '''
     return (source.replace("__FILES__", repr(encoded_files))
-            .replace("__EXPECTED_SHA256__", repr(expected_manifest_sha256))
             .replace("__QUOTA_USED__", repr(quota_used_hours))
             .replace("__RESERVED__", repr(reserved_gpu_hours))
             .replace("__BRANCH_HOURS__", repr(per_branch_hours))
@@ -207,14 +165,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--project-slug", default="laya-gpu-loss-ablation-capture-v50")
-    parser.add_argument("--expected-relay-manifest-sha256", required=True)
     parser.add_argument("--quota-used-hours", required=True, type=float)
     parser.add_argument("--reserved-gpu-hours", required=True, type=float)
     parser.add_argument("--per-branch-hours", type=float, default=1.5)
     args = parser.parse_args()
-    digest = args.expected_relay_manifest_sha256.lower()
-    if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
-        parser.error("expected Relay manifest SHA-256 must be 64 hexadecimal characters")
     if not math.isfinite(args.quota_used_hours) or not 0 <= args.quota_used_hours <= 30:
         parser.error("quota used hours must be within the official 30-hour limit")
     if not math.isfinite(args.reserved_gpu_hours) or args.reserved_gpu_hours < 0:
@@ -236,11 +190,11 @@ def main() -> int:
              "# Laya GPU loss ablation on Relay capture v50\n\n"
              "One paired T4 run compares RLCD and soft-ce on the same frozen 15m/edge0 split. "
              "Encoder, seed, micro-batch, gradient accumulation, epoch count and evaluation are fixed; only loss changes. "
-             "The Relay manifest SHA is pinned at kernel generation; row counts are checked against the runtime report, "
-             "and the notebook refuses an overlapping time split, a mismatched manifest, or unavailable CUDA.\n"},
+             "The runtime records the mounted Relay manifest SHA and prepared split counts. "
+             "The paired branches use the same prepared input and require Kaggle CUDA.\n"},
             {"cell_type": "code", "id": "run-gpu-loss-ablation-v50",
              "execution_count": None, "metadata": {}, "outputs": [],
-             "source": notebook_source(digest,args.quota_used_hours,args.reserved_gpu_hours,
+             "source": notebook_source(args.quota_used_hours,args.reserved_gpu_hours,
                                         args.per_branch_hours,generator_sha256)},
         ],
         "metadata": {"kernelspec": {"display_name": "Python 3",

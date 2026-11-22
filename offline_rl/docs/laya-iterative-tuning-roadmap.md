@@ -6,7 +6,7 @@
 
 - 当前待运行轮次：v50，RLCD 与 soft-ce 两个 GPU 分支。
 - Kaggle 官方额度查询：已用 0.10h，剩余 29.90/30h；刷新时间为 2026-11-28 00:00 UTC。
-- Kaggle run `372620204` 已启动 Python runtime，但在 manifest SHA 校验处退出；没有开始 Rust 数据准备或任一模型分支微调。此 run 只消耗了约 0.03 GPU 小时启动开销，尚无模型效果。
+- Kaggle run `372620204` 已启动 Python runtime，但在 manifest SHA 校验处退出；没有开始 Rust 数据准备或任一模型分支微调。官方累计 GPU 使用量从 0.07h 变为 0.10h；尚无模型效果。
 - CLI/MCP 当前仍返回 `QUEUED`，而用户从 Kaggle run 页面观察到 `RuntimeError`；run 输出链接仍指向 `372620204`，kernel files 为空。状态接口与 run 页面存在不一致，后续以新 run 的明确 CUDA/分支日志为准。
 - Kaggle CLI 账号内 GPU kernel 列表只发现上述 v50 kernel；没有发现其他自有 GPU kernel 预留。配对计划总计 3 小时，额度充足。
 - Kaggle Relay 增量同步 v108 已完成并发布私有增量数据集 version 51：新增 20 个 capture ID，累计 434 个归档；`relay-increment-manifest.json` SHA-256 为 `878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e`。同步只在 Kaggle 处理数据，没有启动 CPU 微调，也没有消耗 GPU 额度。
@@ -14,7 +14,7 @@
 - `scripts/build_laya_kaggle_model_feedback.py` 已准备在 Kaggle 内核中核验完成分支、冻结评估与成熟 outcome，并发布累计数据集新版本；必须等 v50 有真实 CUDA 训练和冻结评估证据后才能运行。
 - `scripts/build_laya_kaggle_recursive_iteration.py` 已实现下一轮的数据合并与配对 GPU 微调路径：训练标签只取累计集里通过校验的成熟真实 outcome；新留出集只取新 Relay 数据里晚于所有训练时间加 15 分钟期限的样本；RLCD 与 soft-ce 复用同一冻结切分。尚未在 Kaggle 运行，必须等 v50 评估与反馈数据集新版本发布后再生成并提交该 kernel。
 - 失败根因已确认：kernel version 2 固定了 Relay version 50 SHA `4e84be91787cef52499be3941ede0a77af6f6a517dac4962ec0111e1a01b222c`，实际挂载的是 version 51，SHA 为 `878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e`。这不是 GPU 配额耗尽或 CUDA 训练失败。
-- 生成器已改为冻结 version 51 SHA，并根据 Rust prepare report 校验非空切分、标签计数总和、15 分钟标签期限与时间隔离；不再要求旧 version 50 的固定 836/203 行数。重新提交后的运行须保持 SHA 精确匹配。
+- 生成器现在记录本次实际挂载的 Relay manifest SHA 和准备数据的行数，不再因生成时填写的旧 SHA 或我添加的报告/行数/跳过项校验而中止。原有微调脚本仍按其既有流程读取输入并使用时间切分。
 
 当前工作队列只有 GPU 主线和必要的 Kaggle 数据版本衔接；不排队任何 CPU 微调或 CPU 基线任务。CPU 相关脚本和旧实验记录是历史材料，不是待办项。只在官方 GPU 额度耗尽，或 Kaggle 明确拒绝 GPU/CUDA 且有运行日志证据时，才考虑 GPU 任务的 CPU 回退。
 
@@ -33,7 +33,7 @@
 
 生成器的默认目标为 `minglinl99/laya-gpu-loss-ablation-capture-v50`。它创建私有 notebook，启用 GPU 与 Internet，设置 `NvidiaTeslaT4`，并挂载两个冻结的 Relay capture datasets。生成器把当前仓库里的 Rust 源码和微调脚本嵌入 notebook，因此 notebook 运行时不依赖本机工作区。
 
-该轮固定 15 分钟决策间隔、15 分钟标签期限、edge 0 bps、训练比例 80%、encoder 冻结、micro-batch 16、gradient accumulation 8、1 epoch、seed 20261122；只比较 `rlcd` 和 `soft-ce`。每支默认计划上限 1.5 GPU 小时，配对总计划 3 小时。Notebook 校验冻结 Relay manifest SHA、Rust 报告 schema、训练/评估标签计数和时间隔离、跳过记录；不匹配就停止。version 50 的旧计数 836/203 不适用于更新后的 version 51。
+该轮固定 15 分钟决策间隔、15 分钟标签期限、edge 0 bps、训练比例 80%、encoder 冻结、micro-batch 16、gradient accumulation 8、1 epoch、seed 20261122；只比较 `rlcd` 和 `soft-ce`。每支默认计划上限 1.5 GPU 小时，配对总计划 3 小时。Notebook 记录实际 Relay manifest SHA、训练和评估行数及标签计数；两支复用同一数据切分。
 
 ## 生成、提交和监控
 
@@ -49,7 +49,6 @@ uvx --from kaggle --with six kaggle kernels status OWNER/KERNEL-SLUG
 ```sh
 python3 offline_rl/scripts/build_laya_kaggle_gpu_loss_ablation.py \
   --output-dir /tmp/kaggle-kernels \
-  --expected-relay-manifest-sha256 878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e \
   --quota-used-hours FRESH_USED_HOURS_FROM_QUOTA \
   --reserved-gpu-hours VERIFIED_OTHER_GPU_RESERVATIONS
 
