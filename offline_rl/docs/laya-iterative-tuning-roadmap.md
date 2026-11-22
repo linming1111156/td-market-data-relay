@@ -7,10 +7,9 @@
 - 当前待运行轮次：v50，RLCD 与 soft-ce 两个 GPU 分支。
 - Kaggle 官方额度查询（2026-11-22 19:14 UTC）：已用 1.20h，剩余 28.80/30h；刷新时间为 2026-11-28 00:00 UTC。
 - 旧 run `372620204` 在 Relay manifest SHA 校验处退出，没有开始数据准备或微调。原因是 notebook version 2 固定了 Relay version 50 的 SHA，但实际挂载的是 version 51；这条硬性 SHA 比对已从 v50 生成器移除，运行仍会记录实际 SHA。
-- 用户登录后的 Kaggle 活动面板显示一个 `Interactive Session with GPU T4 x2` 正在运行约 16 分钟；notebook 单元最后可见的启动输出为 Rust 安装和 Cargo release 构建完成（41.77 秒）。
-- Kaggle 活动会话的 `/kaggle/working` 目录列出 prepared 目录、RLCD/soft-ce 两个分支（含 checkpoint、`run.json`、预测文件）和配对 summary。只读摘要单元在该会话读到：846 训练行、204 评估行；设备 Tesla T4；两支状态均 `complete`；RLCD 记录 0.035250 GPU 小时、soft-ce 记录 0.033591 小时，合计 0.068841 小时。分支目录仍留在 Kaggle。
-- 反馈发布器 kernel v1 已提交，但运行失败：Kaggle CLI 提示 v50 kernel source 无效/未挂载，反馈 kernel 日志为 `expected one source kernel summary; found 0`；没有发布 paper-trade experience 新版本。汇总指标尚未完整提取，本轮数据闭环未完成。
-- 主 kernel v3 的批处理状态在 CLI/MCP 仍显示 `QUEUED`，日志/输出接口没有内容；独立活动面板显示 T4 x2 交互会话。不要把两者混为同一个状态。官方 GPU 已用 1.20h，28.80h 可用，其中分支清单记载本轮训练合计 0.068841h；其余额度变化不能归为训练。下一步解决 Kaggle 内活动会话产物到反馈 kernel 的交接，使反馈发布器可从 Kaggle 输入读取 summary、run manifests、评估和成熟 outcome；不下载数据、不做 CPU 微调。
+- 早先的 Kaggle 交互会话只读摘要曾记录 846 训练行、204 评估行、Tesla T4，以及 RLCD/soft-ce 两支 `complete`（各 0.035250/0.033591 GPU 小时）；这是那次会话的历史证据，不能视为当前 Draft Session 的文件可用性证明。
+- 2026-11-22 19:27 UTC 重新检查后，账号已登录。Kaggle 活动面板显示 Draft Session 的 `Interactive Session with GPU T4 x2` 运行约 41 分钟，保存版 v3 已排队约 3 小时；官方 CLI 状态仍为 `QUEUED`，主 kernel logs 为空。GPU quota 为已用 1.39h、剩余 28.61h。活动面板的 Output 区列出 3.2 GiB 旧产物，但在当前 Draft Session 执行只读 summary 单元时，`/kaggle/working/laya-market-gpu-loss-ablation-capture-v50-summary.json` 不存在；训练代码单元仍未执行。不要把 Output 面板的旧文件、当前 Draft Session 和保存版 v3 当成同一个运行环境，也不要把额度变化归为微调。
+- 反馈发布器 kernel v1 的 Kaggle 日志确认失败于 `expected one source kernel summary; found 0`；这与反馈 kernel 没有挂载已完成的 v50 kernel 输出一致。没有发布 paper-trade experience 新版本。必须先让一个 v50 GPU kernel 实际完成并发布输出，再运行反馈发布器；当前本轮微调与数据闭环尚未完成。
 - Kaggle CLI 账号内 GPU kernel 列表只发现上述 v50 kernel；没有发现其他自有 GPU kernel 预留。配对计划总计 3 小时，额度充足。
 - Kaggle Relay 增量同步 v108 已完成并发布私有增量数据集 version 51：新增 20 个 capture ID，累计 434 个归档；`relay-increment-manifest.json` SHA-256 为 `878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e`。同步只在 Kaggle 处理数据，没有启动 CPU 微调，也没有消耗 GPU 额度。
 - 累计 paper-trade 数据集是私有 version 51，最新数据轮次为 `v105-relay-v49-15m-edge0-utcday-v1`。具体样本数以 Kaggle 内该版本的 `manifest.json` 为准；本机不下载或缓存数据文件。
