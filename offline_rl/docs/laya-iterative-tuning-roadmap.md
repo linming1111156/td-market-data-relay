@@ -2,7 +2,7 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
-## 当前进度（2026-11-22 14:57 UTC）
+## 当前进度（2026-11-22 16:33 UTC）
 
 - 当前待运行轮次：v50，RLCD 与 soft-ce 两个 GPU 分支。
 - Kaggle 官方额度查询：已用 0.07h，剩余 29.93/30h；刷新时间为 2026-11-28 00:00 UTC。
@@ -13,6 +13,8 @@
 - `scripts/build_laya_kaggle_model_feedback.py` 已准备在 Kaggle 内核中核验完成分支、冻结评估与成熟 outcome，并发布累计数据集新版本；必须等 v50 有真实 CUDA 训练和冻结评估证据后才能运行。
 - `scripts/build_laya_kaggle_recursive_iteration.py` 已实现下一轮的数据合并与配对 GPU 微调路径：训练标签只取累计集里通过校验的成熟真实 outcome；新留出集只取新 Relay 数据里晚于所有训练时间加 15 分钟期限的样本；RLCD 与 soft-ce 复用同一冻结切分。尚未在 Kaggle 运行，必须等 v50 评估与反馈数据集新版本发布后再生成并提交该 kernel。
 - v50 kernel 的源代码预期 Relay manifest SHA 是 `4e84be91787cef52499be3941ede0a77af6f6a517dac4962ec0111e1a01b222c`。增量数据集现已前进到 version 51；v50 启动时必须核对挂载 manifest 仍匹配该 SHA，否则应让输入校验失败，不能绕过冻结检查。
+- 排队诊断：Kaggle kernel version 2 的元数据确认 `enableGpu=true`、machine shape 为 `NvidiaTeslaT4`；CLI 和 MCP 仍只返回 `QUEUED`，日志与 kernel files 均为空，GPU 使用量没有增加。它还没有进入 notebook 运行阶段，因此这不是 Laya 微调报错。Kaggle 当前接口没有提供更细的 scheduler 排队原因。
+- v50 的数据源元数据只显示 dataset slug，没有可核对的版本号。当前 Relay increment 已是 version 51，SHA 与 v50 固定的 version 50 SHA 不同；若排队任务启动时挂载了新版本，它会按设计在数据校验处停止。启动日志必须确认实际 manifest SHA，再判断是否进入准备和 CUDA 训练。
 
 当前工作队列只有 GPU 主线和必要的 Kaggle 数据版本衔接；不排队任何 CPU 微调或 CPU 基线任务。CPU 相关脚本和旧实验记录是历史材料，不是待办项。只在官方 GPU 额度耗尽，或 Kaggle 明确拒绝 GPU/CUDA 且有运行日志证据时，才考虑 GPU 任务的 CPU 回退。
 
