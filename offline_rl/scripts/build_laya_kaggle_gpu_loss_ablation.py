@@ -97,12 +97,27 @@ prepare_seconds=round(time.monotonic()-prepare_started,3)
 prepare_report=json.loads((prepared/'prepare-report.json').read_text())
 if prepare_report.get('schema')!='td_market_data_laya_prepare_result':
  raise RuntimeError('Rust prepare report schema mismatch')
-if prepare_report.get('train_rows')!=836 or prepare_report.get('evaluation_rows')!=203:
- raise RuntimeError('prepared split row counts do not match the frozen v50 label matrix')
-if prepare_report.get('train_label_counts')!={'flat':639,'long':98,'short':99}:
- raise RuntimeError('prepared train labels do not match frozen v50 15m/edge0 counts')
-if prepare_report.get('evaluation_label_counts')!={'flat':143,'long':29,'short':31}:
- raise RuntimeError('prepared evaluation labels do not match frozen v50 15m/edge0 counts')
+def validate_split(split):
+ row_count=prepare_report.get(f'{split}_rows')
+ label_counts=prepare_report.get(f'{split}_label_counts')
+ if not isinstance(row_count,int) or isinstance(row_count,bool) or row_count<=0:
+  raise RuntimeError(f'{split} split has no valid rows')
+ if (not isinstance(label_counts,dict) or not label_counts
+     or any(label not in ('flat','long','short') for label in label_counts)
+     or any(not isinstance(count,int) or isinstance(count,bool) or count<0
+            for count in label_counts.values())
+     or sum(label_counts.values())!=row_count):
+  raise RuntimeError(f'{split} label counts do not match its row count')
+validate_split('train'); validate_split('evaluation')
+time_slicing=prepare_report.get('time_slicing') or {}
+horizon=time_slicing.get('label_horizon_minutes')
+last_train=time_slicing.get('last_train_minute_utc')
+first_eval=time_slicing.get('first_evaluation_minute_utc')
+if (horizon!=HORIZON_MINUTES
+    or not isinstance(last_train,int) or isinstance(last_train,bool)
+    or not isinstance(first_eval,int) or isinstance(first_eval,bool)
+    or last_train+horizon>first_eval):
+ raise RuntimeError('prepared chronological train/evaluation windows overlap or have the wrong horizon')
 skipped=prepare_report.get('skipped_candidates') or {}
 records=prepare_report.get('skipped_candidate_records') or []
 from collections import Counter
@@ -127,6 +142,7 @@ print(json.dumps({'event':'prepared','gpu':gpu_name,'relay_manifest_sha256':mani
  'evaluation_rows':prepare_report.get('evaluation_rows'),
  'train_label_counts':prepare_report.get('train_label_counts'),
  'evaluation_label_counts':prepare_report.get('evaluation_label_counts'),
+ 'time_slicing':time_slicing,
  'prepare_seconds':prepare_seconds,'quota_used_hours':QUOTA_USED_HOURS,
  'other_reserved_gpu_hours':OTHER_RESERVED_GPU_HOURS,
  'planned_batch_gpu_hours':BATCH_PLAN_HOURS},ensure_ascii=False,sort_keys=True),flush=True)
@@ -220,7 +236,8 @@ def main() -> int:
              "# Laya GPU loss ablation on Relay capture v50\n\n"
              "One paired T4 run compares RLCD and soft-ce on the same frozen 15m/edge0 split. "
              "Encoder, seed, micro-batch, gradient accumulation, epoch count and evaluation are fixed; only loss changes. "
-             "The notebook refuses a mismatched Relay manifest or unavailable CUDA.\n"},
+             "The Relay manifest SHA is pinned at kernel generation; row counts are checked against the runtime report, "
+             "and the notebook refuses an overlapping time split, a mismatched manifest, or unavailable CUDA.\n"},
             {"cell_type": "code", "id": "run-gpu-loss-ablation-v50",
              "execution_count": None, "metadata": {}, "outputs": [],
              "source": notebook_source(digest,args.quota_used_hours,args.reserved_gpu_hours,

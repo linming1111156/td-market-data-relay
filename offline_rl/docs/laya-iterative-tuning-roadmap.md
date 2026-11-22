@@ -2,19 +2,19 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
-## 当前进度（2026-11-22 16:33 UTC）
+## 当前进度（2026-11-22 16:45 UTC）
 
 - 当前待运行轮次：v50，RLCD 与 soft-ce 两个 GPU 分支。
-- Kaggle 官方额度查询：已用 0.07h，剩余 29.93/30h；刷新时间为 2026-11-28 00:00 UTC。
-- `minglinl99/laya-gpu-loss-ablation-capture-v50` 状态仍为 `QUEUED`，日志为空。本轮尚未开始微调，尚无本轮模型效果或实际 GPU 训练时长。
+- Kaggle 官方额度查询：已用 0.10h，剩余 29.90/30h；刷新时间为 2026-11-28 00:00 UTC。
+- Kaggle run `372620204` 已启动 Python runtime，但在 manifest SHA 校验处退出；没有开始 Rust 数据准备或任一模型分支微调。此 run 只消耗了约 0.03 GPU 小时启动开销，尚无模型效果。
+- CLI/MCP 当前仍返回 `QUEUED`，而用户从 Kaggle run 页面观察到 `RuntimeError`；run 输出链接仍指向 `372620204`，kernel files 为空。状态接口与 run 页面存在不一致，后续以新 run 的明确 CUDA/分支日志为准。
 - Kaggle CLI 账号内 GPU kernel 列表只发现上述 v50 kernel；没有发现其他自有 GPU kernel 预留。配对计划总计 3 小时，额度充足。
 - Kaggle Relay 增量同步 v108 已完成并发布私有增量数据集 version 51：新增 20 个 capture ID，累计 434 个归档；`relay-increment-manifest.json` SHA-256 为 `878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e`。同步只在 Kaggle 处理数据，没有启动 CPU 微调，也没有消耗 GPU 额度。
 - 累计 paper-trade 数据集是私有 version 51，最新数据轮次为 `v105-relay-v49-15m-edge0-utcday-v1`。具体样本数以 Kaggle 内该版本的 `manifest.json` 为准；本机不下载或缓存数据文件。
 - `scripts/build_laya_kaggle_model_feedback.py` 已准备在 Kaggle 内核中核验完成分支、冻结评估与成熟 outcome，并发布累计数据集新版本；必须等 v50 有真实 CUDA 训练和冻结评估证据后才能运行。
 - `scripts/build_laya_kaggle_recursive_iteration.py` 已实现下一轮的数据合并与配对 GPU 微调路径：训练标签只取累计集里通过校验的成熟真实 outcome；新留出集只取新 Relay 数据里晚于所有训练时间加 15 分钟期限的样本；RLCD 与 soft-ce 复用同一冻结切分。尚未在 Kaggle 运行，必须等 v50 评估与反馈数据集新版本发布后再生成并提交该 kernel。
-- v50 kernel 的源代码预期 Relay manifest SHA 是 `4e84be91787cef52499be3941ede0a77af6f6a517dac4962ec0111e1a01b222c`。增量数据集现已前进到 version 51；v50 启动时必须核对挂载 manifest 仍匹配该 SHA，否则应让输入校验失败，不能绕过冻结检查。
-- 排队诊断：Kaggle kernel version 2 的元数据确认 `enableGpu=true`、machine shape 为 `NvidiaTeslaT4`；CLI 和 MCP 仍只返回 `QUEUED`，日志与 kernel files 均为空，GPU 使用量没有增加。它还没有进入 notebook 运行阶段，因此这不是 Laya 微调报错。Kaggle 当前接口没有提供更细的 scheduler 排队原因。
-- v50 的数据源元数据只显示 dataset slug，没有可核对的版本号。当前 Relay increment 已是 version 51，SHA 与 v50 固定的 version 50 SHA 不同；若排队任务启动时挂载了新版本，它会按设计在数据校验处停止。启动日志必须确认实际 manifest SHA，再判断是否进入准备和 CUDA 训练。
+- 失败根因已确认：kernel version 2 固定了 Relay version 50 SHA `4e84be91787cef52499be3941ede0a77af6f6a517dac4962ec0111e1a01b222c`，实际挂载的是 version 51，SHA 为 `878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e`。这不是 GPU 配额耗尽或 CUDA 训练失败。
+- 生成器已改为冻结 version 51 SHA，并根据 Rust prepare report 校验非空切分、标签计数总和、15 分钟标签期限与时间隔离；不再要求旧 version 50 的固定 836/203 行数。重新提交后的运行须保持 SHA 精确匹配。
 
 当前工作队列只有 GPU 主线和必要的 Kaggle 数据版本衔接；不排队任何 CPU 微调或 CPU 基线任务。CPU 相关脚本和旧实验记录是历史材料，不是待办项。只在官方 GPU 额度耗尽，或 Kaggle 明确拒绝 GPU/CUDA 且有运行日志证据时，才考虑 GPU 任务的 CPU 回退。
 
@@ -33,7 +33,7 @@
 
 生成器的默认目标为 `minglinl99/laya-gpu-loss-ablation-capture-v50`。它创建私有 notebook，启用 GPU 与 Internet，设置 `NvidiaTeslaT4`，并挂载两个冻结的 Relay capture datasets。生成器把当前仓库里的 Rust 源码和微调脚本嵌入 notebook，因此 notebook 运行时不依赖本机工作区。
 
-该轮固定 15 分钟决策间隔、15 分钟标签期限、edge 0 bps、训练比例 80%、encoder 冻结、micro-batch 16、gradient accumulation 8、1 epoch、seed 20261122；只比较 `rlcd` 和 `soft-ce`。每支默认计划上限 1.5 GPU 小时，配对总计划 3 小时。Notebook 检查 Relay manifest SHA、Rust 准备报告 schema、训练 836 条（flat/long/short 为 639/98/99）、评估 203 条（143/29/31）和跳过记录；不匹配就停止。
+该轮固定 15 分钟决策间隔、15 分钟标签期限、edge 0 bps、训练比例 80%、encoder 冻结、micro-batch 16、gradient accumulation 8、1 epoch、seed 20261122；只比较 `rlcd` 和 `soft-ce`。每支默认计划上限 1.5 GPU 小时，配对总计划 3 小时。Notebook 校验冻结 Relay manifest SHA、Rust 报告 schema、训练/评估标签计数和时间隔离、跳过记录；不匹配就停止。version 50 的旧计数 836/203 不适用于更新后的 version 51。
 
 ## 生成、提交和监控
 
@@ -48,13 +48,13 @@ uvx --from kaggle --with six kaggle kernels status OWNER/KERNEL-SLUG
 
 ```sh
 python3 offline_rl/scripts/build_laya_kaggle_gpu_loss_ablation.py \
-  --output-dir /mnt/data/kaggle-kernels \
-  --expected-relay-manifest-sha256 4e84be91787cef52499be3941ede0a77af6f6a517dac4962ec0111e1a01b222c \
+  --output-dir /tmp/kaggle-kernels \
+  --expected-relay-manifest-sha256 878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e \
   --quota-used-hours FRESH_USED_HOURS_FROM_QUOTA \
   --reserved-gpu-hours VERIFIED_OTHER_GPU_RESERVATIONS
 
 uvx --from kaggle --with six kaggle kernels push \
-  -p /mnt/data/kaggle-kernels/laya-gpu-loss-ablation-capture-v50
+  -p /tmp/kaggle-kernels/laya-gpu-loss-ablation-capture-v50
 uvx --from kaggle --with six kaggle kernels status \
   minglinl99/laya-gpu-loss-ablation-capture-v50
 uvx --from kaggle --with six kaggle kernels logs \
