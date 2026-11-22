@@ -36,7 +36,7 @@ def notebook_source(quota_used_hours: float,
 from pathlib import Path
 
 FILES=json.loads(__FILES__)
-ROOT=Path('/kaggle/working/td-market-data-relay-gpu-loss-ablation-v50')
+ROOT=Path('/kaggle/working/laya-market-gpu-loss-ablation-v50-run')
 for name,payload in FILES.items():
  path=ROOT/name; path.parent.mkdir(parents=True,exist_ok=True)
  path.write_bytes(base64.b64decode(payload))
@@ -82,7 +82,7 @@ print(json.dumps({'event':'input_snapshot','relay_manifest_sha256':manifest_sha2
  'increment_dataset':increment.name},sort_keys=True),flush=True)
 
 os.environ['CARGO_TARGET_DIR']='/tmp/laya-market-gpu-loss-ablation-v50-cargo'
-prepared=Path('/kaggle/working/laya-market-gpu-loss-ablation-v50-prepared')
+prepared=Path('/kaggle/working/laya-market-gpu-loss-ablation-v50-retry1-prepared')
 prepare_cmd=[sys.executable,str(ROOT/'offline_rl/scripts/laya_market_finetune.py'),
  '--archive-root',str(base),'--additional-archive-root',str(increment),
  '--additional-dataset-ref',__DATASET_REF__, '--output',str(prepared),
@@ -108,8 +108,8 @@ print(json.dumps({'event':'prepared','gpu':gpu_name,'relay_manifest_sha256':mani
 
 results=[]
 for loss in LOSSES:
- output=Path('/kaggle/working')/f'laya-market-gpu-loss-ablation-v50-{loss}'
- log_path=Path('/kaggle/working')/f'laya-market-gpu-loss-ablation-v50-{loss}.log'
+ output=Path('/kaggle/working')/f'laya-market-gpu-loss-ablation-v50-retry1-{loss}'
+ log_path=Path('/kaggle/working')/f'laya-market-gpu-loss-ablation-v50-retry1-{loss}.log'
  command=[sys.executable,str(ROOT/'offline_rl/scripts/laya_market_finetune.py'),
   '--relay-prepared-data-dir',str(prepared_data),'--output',str(output),
   '--device','cuda','--gpu-hours-used-7d',str(QUOTA_USED_HOURS),
