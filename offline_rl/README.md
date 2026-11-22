@@ -129,11 +129,8 @@ offline_rl/.venv/bin/td-market-data-rl validation-sweep \
 Verify each artifact with `td-market-data-rl verify-validation-sweep`, using the
 same historical inputs and role plan. Validation is for model selection only;
 Test/OOS must remain reserved until the architecture and training settings are
-frozen. The masked raw MLP was frozen and evaluated once on Test; it lost to
-NOOP and buy-and-hold, so it is not a trading candidate. The Test artifact and
-freeze record are documented in
-[`docs/first-principles-strategy-audit-20261102.md`](docs/first-principles-strategy-audit-20261102.md).
-OOS remains untouched.
+frozen. Historical Test results are separate from the current code path; do not
+infer a current candidate from them. OOS remains untouched.
 
 ## Inspect Train-only factor signal strength
 
@@ -152,13 +149,16 @@ PYTHONPATH=offline_rl/src offline_rl/.venv/bin/python \
   --output /mnt/data/research/train-signal-diagnostics-v1.json
 ```
 
-The first-principles review of the current accounting, signal, and policy
-assumptions is recorded in
-[`docs/first-principles-strategy-audit-20261102.md`](docs/first-principles-strategy-audit-20261102.md).
+This diagnostic is descriptive only: it does not establish that a factor will
+improve net trading results. Use the current code and frozen artifacts for any
+new model-selection claim.
 
 ## Laya market tuning
 
-The earlier local Laya Validation experiments and run commands are retired. Use [`docs/laya-iterative-tuning-roadmap.md`](docs/laya-iterative-tuning-roadmap.md) for the current Laya evidence, Kaggle execution rules, and iteration gates.
+The earlier local Laya Validation experiments and run commands are retired.
+The current Kaggle T4 paired-loss workflow, command sequence, artifact schema,
+and implementation boundaries are documented in
+[`docs/laya-iterative-tuning-roadmap.md`](docs/laya-iterative-tuning-roadmap.md).
 
 ## Compare with frozen baselines
 
@@ -197,8 +197,8 @@ By default, `rl_policy_v1` samples from the categorical policy at inference.
 To compare that behavior with deterministic highest-probability actions, pass
 `--strategies rl_policy_v1,rl_policy_argmax_v1,noop_flat_v1`. The argmax mode
 uses the same frozen model and feasibility mask but does not sample. The
-inference-mode Validation report for the current frozen MLP is documented in
-[`docs/first-principles-strategy-audit-20261102.md`](docs/first-principles-strategy-audit-20261102.md).
+Compare inference modes only on a frozen Validation artifact and keep Test/OOS
+separate.
 
 For Vision factor screening, `validation-sweep` trains each factor suite on
 Train and creates seed-specific candidate artifacts. Then the standalone

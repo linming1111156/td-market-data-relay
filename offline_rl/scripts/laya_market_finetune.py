@@ -293,7 +293,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-hours-used-7d", type=float,
                         help="required for GPU training: observed Kaggle GPU hours in the rolling last 7 days")
     parser.add_argument("--gpu-planned-hours", type=float,
-                        help="required for GPU training: planned GPU run duration, within the 27-hour weekly plan")
+                        help="required for GPU training: planned GPU run duration, within the official 30-hour rolling 7-day limit")
     parser.add_argument("--workers", type=int, default=min(os.cpu_count() or 2, 8))
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--micro-batch", type=int, default=8)

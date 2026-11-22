@@ -5,9 +5,9 @@ in [`offline_rl/README.md`](offline_rl/README.md). It is a separate Python
 project and does not change the existing Gateway workspace.
 
 For large Binance Vision Mark and aggregate-trade archives, the optional Rust
-minute preprocessing engine and its benchmark are documented in
+minute preprocessing engine and its feature stage are documented in
 [`docs/rust-bulk-engine.md`](docs/rust-bulk-engine.md). Python remains the entry
-point and owns feature construction and RL training.
+point and owns workflow orchestration and RL training.
 
 An independent Python implementation for future public Binance market data. It
 does not import, copy, or modify the private `td-gateway` repository. It does
