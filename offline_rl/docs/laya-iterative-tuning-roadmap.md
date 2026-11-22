@@ -12,9 +12,10 @@
 - v51 递归构建器曾因行级 source hash 条件排除 1,007 条累计行，直接缩小了训练样本。现已删除该行级 hash 过滤；这类 SHA 只保留为运行报告中的来源记录。
 - Kaggle Relay 同步 kernel v109 已完成，发布 Relay increment version 52：新增 46 个 capture ID，累计 481 个归档；manifest SHA-256 为 `e5371f09ea520b51fe3191fddc2e41988ace8a0233980b9aaa46f2c87cee4466`。原始行情只留 Kaggle。
 - 递归轮次 v52 的 notebook version 5 因 Relay manifest SHA 不匹配而在训练前失败；version 6 排队后被取消（`CANCEL_ACKNOWLEDGED`），都没有开始微调或消耗本轮 GPU 额度。已移除生成器中对累计集、Relay 清单与行级哈希的硬性相等校验，时间戳冲突样本改为跳过，不再因单行冲突终止整轮。
-- 修正版已更新到既有 GPU notebook `minglinl99/laya-gpu-loss-ablation-capture-v50` 的 version 7，保持 T4 GPU；当前 `QUEUED`、尚无日志，尚未训练。Experience 输入为 version 53，Relay 输入为 version 52；清单 SHA 仅记录实际值，不作为是否训练的门槛。RLCD 与 soft-ce 各计划 1.5 GPU 小时。
-- Kaggle 官方 GPU 额度（2026-11-23）：已用 2.69h，剩余 27.31/30h，刷新时间 2026-11-28 00:00 UTC。额度充足，GPU 优先。
-- 后续每一轮微调都更新这一个既有 GPU notebook 的版本，不新建按轮次命名的 GPU notebook；CPU 只用于必要的数据同步与发布，不用于模型微调。当前下一步是监控 version 7；获得 CUDA 后确认两支是否进入训练，并记录训练量与冻结评估结果。
+- 修正版已更新到既有 GPU notebook `minglinl99/laya-gpu-loss-ablation-capture-v50` 的 version 7，保持 T4 GPU。CLI 提交的批任务经网页 Active Events 确认排队后已取消，随后在用户打开的同 notebook Draft Session 中运行当前单元；网页显示 `GPU T4 x2 On`。Relay 数据准备完成，RLCD 分支已训练 1 epoch，mean loss 1.7998；两支均使用 945 训练行、105 校准行、20 留出行并输出了评估表。Notebook 单元仍在运行/收尾，完整分支指标与 summary 尚待读取。
+- Kaggle 官方 GPU 额度（2026-11-23）：最近查询已用 2.95h，剩余 27.05/30h，刷新时间 2026-11-28 00:00 UTC。额度充足，GPU 优先。
+- 后续每一轮微调都更新这一个既有 GPU notebook 的版本，不新建按轮次命名的 GPU notebook；CPU 只用于必要的数据同步和发布，不用于模型微调。当前下一步是从正在运行的网页 session 读取完整指标和 summary，再冻结并发布评估反馈。
+- Relay 的 CPU 归档准备结果缓存于 Kaggle `/kaggle/working`，相同挂载输入与参数在同一 live session 重跑时复用；输入变化或缓存不可读时自动重建，不因缓存状态中止。所有缓存数据留在 Kaggle。
 ## 当前实现入口
 
 | 文件 | 用途 |

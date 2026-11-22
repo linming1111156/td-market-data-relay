@@ -132,13 +132,40 @@ relay_sha=sha256(relay_manifest_path)
 
 os.environ['CARGO_TARGET_DIR']='/tmp/laya-recursive-round-cargo'
 prepared_raw=WORK/'laya-recursive-round-raw'
+raw_cache_key={
+ 'base_capture_ref':BASE_CAPTURE_REF,
+ 'increment_ref':INCREMENT_REF,
+ 'relay_manifest_sha256':relay_sha,
+ 'decision_interval_minutes':15,
+ 'horizon_minutes':15,
+ 'train_fraction':0.8,
+ 'fee_bps_each_side':10,
+ 'slippage_bps_each_side':5,
+ 'edge_bps_round_trip':0}
+raw_cache_marker=prepared_raw/'cache-key.json'
+try:
+ previous_raw_cache=json.loads(raw_cache_marker.read_text(encoding='utf-8'))
+except (OSError,ValueError):
+ previous_raw_cache=None
+raw_cache_hit=(previous_raw_cache==raw_cache_key
+ and (prepared_raw/'dataset'/'train.jsonl').is_file()
+ and (prepared_raw/'dataset'/'evaluation.jsonl').is_file())
+if raw_cache_hit:
+ print(json.dumps({'event':'relay_prepare_cache_hit','cache_key':raw_cache_key},
+  sort_keys=True),flush=True)
+else:
+ shutil.rmtree(prepared_raw,ignore_errors=True)
 prepare_cmd=[sys.executable,str(ROOT/'offline_rl/scripts/laya_market_finetune.py'),
  '--archive-root',str(base),'--additional-archive-root',str(increment),
  '--additional-dataset-ref',INCREMENT_REF,'--output',str(prepared_raw),
  '--prepare-only','--workers','8','--train-fraction','0.8',
  '--decision-interval-minutes','15','--horizon-minutes','15',
  '--fee-bps-each-side','10','--slippage-bps-each-side','5','--edge-bps-round-trip','0']
-subprocess.run(prepare_cmd,cwd=ROOT,check=True,timeout=7200)
+if not raw_cache_hit:
+ subprocess.run(prepare_cmd,cwd=ROOT,check=True,timeout=7200)
+ raw_cache_marker.write_text(json.dumps(raw_cache_key,sort_keys=True,indent=2)+'\n')
+ print(json.dumps({'event':'relay_prepare_cache_created','cache_key':raw_cache_key},
+  sort_keys=True),flush=True)
 raw=prepared_raw/'dataset'
 raw_manifest=json.loads((raw/'manifest.json').read_text(encoding='utf-8'))
 raw_report=json.loads((raw/'report.json').read_text(encoding='utf-8'))
@@ -197,6 +224,7 @@ report={'schema':'td_market_data_laya_prepare_result','version':1,
  'fresh_relay_train_overlap_rows':fresh_train_overlap,
  'fresh_relay_evaluation_overlap_rows':overlap_eval,
  'fresh_relay_evaluation_embargoed_rows':embargoed_eval,
+ 'raw_relay_preparation_cache_hit':raw_cache_hit,
  'legacy_rows_without_source_record_hash':legacy_missing_source_hash,
  'conflicting_cumulative_timestamps':len(conflicting_timestamps),
  'rejected_cumulative_rows':dict(sorted(rejected.items())),
@@ -217,6 +245,7 @@ print(json.dumps({'event':'data_prepared','experience_manifest_sha256':manifest_
  'fresh_relay_train_rows_added':fresh_train_added,'fresh_relay_train_overlap_rows':fresh_train_overlap,
  'fresh_relay_evaluation_overlap_rows':overlap_eval,
  'fresh_relay_evaluation_embargoed_rows':embargoed_eval,
+ 'raw_relay_preparation_cache_hit':raw_cache_hit,
  'legacy_rows_without_source_record_hash':legacy_missing_source_hash,
  'conflicting_cumulative_timestamps':len(conflicting_timestamps),
  'label_counts':label_counts,'rejected_cumulative_rows':dict(rejected)},ensure_ascii=False,sort_keys=True),flush=True)
