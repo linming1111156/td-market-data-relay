@@ -46,14 +46,20 @@ def jsonl_rows(path):
    except ValueError as error: raise ValueError(f'invalid JSONL at {path}:{line_number}') from error
  return rows
 
-def dataset_root(ref):
- for metadata_path in INPUT.rglob('dataset-metadata.json'):
-  try: metadata=json.loads(metadata_path.read_text(encoding='utf-8'))
+def dataset_root(expected_round):
+ matches=[]
+ for manifest_path in INPUT.rglob('manifest.json'):
+  try: candidate=json.loads(manifest_path.read_text(encoding='utf-8'))
   except (OSError,ValueError): continue
-  if metadata.get('id')==ref: return metadata_path.parent
- raise FileNotFoundError('Kaggle cumulative experience input missing: '+ref)
+  if (candidate.get('schema')=='td_market_data_laya_paper_trade_round'
+      and candidate.get('version')==1
+      and candidate.get('round_id')==expected_round):
+   matches.append(manifest_path.parent)
+ if len(matches)!=1:
+  raise FileNotFoundError(f'expected one cumulative experience input for {expected_round}; found {len(matches)}')
+ return matches[0]
 
-experience=dataset_root(DATASET_REF)
+experience=dataset_root(EXPECTED_DATASET_ROUND)
 experience_manifest_path=experience/'manifest.json'
 experience_manifest_sha256=sha256(experience_manifest_path)
 manifest=json.loads(experience_manifest_path.read_text(encoding='utf-8'))
@@ -267,10 +273,9 @@ manifest['files']['paper-trade-decisions.jsonl']={'rows':len(decisions),
 manifest['files']['quality-events.jsonl']={'rows':len(quality_rows),
  'sha256':sha256(OUT/'quality-events.jsonl')}
 metadata_path=OUT/'dataset-metadata.json'
-if metadata_path.exists():
- metadata=json.loads(metadata_path.read_text(encoding='utf-8'))
- metadata['id']=DATASET_REF
- metadata_path.write_text(canonical(metadata)+'\n',encoding='utf-8')
+metadata={'id':DATASET_REF,'title':'Laya Market Paper Trade Experience',
+ 'licenses':[{'name':'CC0-1.0'}]}
+metadata_path.write_text(canonical(metadata)+'\n',encoding='utf-8')
 manifest_path=OUT/'manifest.json'
 manifest_path.write_text(canonical(manifest)+'\n',encoding='utf-8')
 
