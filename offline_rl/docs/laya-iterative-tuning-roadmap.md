@@ -18,6 +18,7 @@
 - 上述本机扫描与 CPU 诊断只保留汇总数字作为“已废弃的历史记录”，其本机报告、manifest、训练/评估 JSONL、Vision 缓存和从 Kaggle 下载到本机的增量归档副本均已删除。历史数字不可作为当前数据输入、可复现实验产物或晋级证据。
 - 历史 Vision 分支仅保留实验结论摘要：2025-11 训练、2026-09 评估，各 2,874 条不重叠决策；always-flat 准确率约 90.2%-93.3%、balanced accuracy 33.3%，规则/轻量模型各段费用后收益全负。原始 ZIP、处理数据与报告不在本机保留；该分支时间信息不含实时接收时间和结算 Funding ledger，不与 Relay 流混合，也不能单独证明跨行情稳定性。
 - `offline_rl/scripts/laya_vision_prepare.py` 和 `laya_market_finetune.py` 支持带 SHA-256 清单的历史输入。此前在本机生成的 1.2 GB Vision 缓存及本机 Laya 训练/评估 JSONL 已删除；相关 CPU 报告只作历史记录，不得作为后续输入。此后原始输入、数据准备、CPU 诊断、Rust 处理、训练、评估和输出都必须在 Kaggle：微调及 Laya 推理/持续学习等 GPU 兼容主线任务必须优先使用 Kaggle GPU，并把滚动 7 天额度用尽；只有额度实际耗尽，或 Kaggle 未分配 GPU/CUDA 不可用时，才回退 Kaggle CPU。额度未知时先查询和确认，不提前切换 CPU。Rust 数据准备和传统基线等 CPU 原生任务仍使用 Kaggle CPU。
+- **GPU 额度强制执行规则（用户要求，2026-11-22）**：任何 GPU 兼容主线任务在选择 CPU 之前，必须先读取并记录 Kaggle 最新滚动 7 天用量、剩余额度、活动/排队 GPU 项目预留时长；额度未知时不得启动 CPU 回退。若仍有可用额度，必须为该任务显式启用 GPU 并实际提交 GPU 运行；只有官方显示剩余额度为 0，或 Kaggle 明确未分配 GPU/CUDA 不可用且已记录失败证据，才可把未完成工作切到 Kaggle CPU。每次运行记录 GPU 请求参数、实际设备/CUDA、开始/结束额度与实际 GPU 小时；额度不足以完成整轮时先用完剩余额度，再以相同冻结输入和配置在 Kaggle CPU 完成。不得超过滚动 30 小时上限，不得为了耗额度重复实验。GPU 兼容任务未记录上述证据不得标记完成；Rust 归档检查、标签矩阵和传统规则/逻辑回归基线等 CPU 原生步骤不强行改用 GPU。历史上仅写“GPU 未启用”但没有当轮额度查询和 GPU 分配尝试的 CPU 运行，不构成额度耗尽证明，后续不得据此直接回退。
 - Kaggle API 凭据位于 `~/.kaggle/access_token`，权限为 `0600`；绝不读取、输出或记录 token 内容。此环境应使用 `uvx --from kaggle --with six kaggle ...` 运行 Kaggle CLI 2.2.5；不要依赖全局 `kaggle` 命令（本机未安装），也不要用 Python 3.9 的 Kaggle 包 1.7.4.5（它只检查旧格式 `~/.kaggle/kaggle.json`，因此会误报缺少凭据）。每个 notebook 都通过 `kernel-metadata.json` 显式设置私有性、数据集 sources、Internet 和 GPU/TPU；仅在运行需用 GPU 时开启 GPU，之后核对 Kaggle 元数据与运行状态。
 - **Relay 配置固定记录**：服务地址为 `https://us-relay-1.linair99.de5.net`；密钥变量名为 `RELAY_API_KEY`，本机来源文件为 `/Users/lin/project/td-market-data-relay/.env`。文档只记录地址、变量名和文件路径；不得读取后输出、提交或复制密钥值。Kaggle 侧只从 Kaggle Secret/私有配置集读取该变量，Relay 响应中的数据与运行产物仍只留在 Kaggle。
 - 早期状态快照（已被本节后续记录取代）：Kaggle 凭据在 `~/.kaggle/access_token`，token 不进入仓库。CPU v15 的 Rust 准备接受 461 个归档并生成 707 条训练、150 条评估；Vega 已推理，seeded learner 的 CPU 初始化仍慢。该快照记录旧 CPU 项目仍在运行、v8 version 2 已保存但未运行；二者状态后来均已更新。GPU evaluation、prequential 与 MB4/MB8 的指标见上方证据，均未晋级。MB16/MB32 branch-matrix v7 首个 seed 分支超过 0.5 小时限制而失败。Kaggle 可同时运行的 GPU notebook 槽位上限实测为 2；Web UI 多 cell 并发仍待探针验证。
@@ -30,6 +31,7 @@
 - 用同一份评估 JSONL 计算 always-flat、base Laya、微调 Laya 的准确率、balanced accuracy、macro-F1 和各类别召回率。
 - 验证评估集与训练集按时间完全隔离，并检查校准数据是否与评估数据复用。
 - 先完成指标口径核对；核对通过且数据满足实验条件后，Kaggle 微调必须先使用 GPU，并持续安排 GPU 兼容任务直至官方滚动额度用尽。只在额度实际耗尽，或 Kaggle 未分配 GPU/CUDA 不可用时切换到 Kaggle CPU；额度状态未知时先查询，不以未知或“计划不够 27 小时”为由提前回退。不得超过官方 30 小时上限，也不得为消耗额度重复相同实验。所有原始与派生数据、依赖安装、处理、训练、评估、报告和模型产物均在 Kaggle 完成；本机只保存源代码与路线图，不下载或缓存 Laya 数据/运行产物。
+- **执行门槛**：每项 GPU 兼容任务启动前，先登记新鲜 quota 与活动/排队预留，再显式请求 Kaggle GPU 并核实设备；有剩余额度却只跑 CPU 的结果不得验收。只有额度确实归零，或 Kaggle/CUDA 分配失败并留有可复核记录，才允许 CPU 接手。逐项在路线图记额度、请求/实际设备、GPU 小时及回退依据；CPU 原生的 Rust、标签矩阵和传统基线依其自身运行需求使用 Kaggle CPU。
 
 ### 2. 用 Kaggle CPU 改善数据与标签
 
@@ -520,6 +522,7 @@
 - **Relay v99 同步并发布 capture version 45（Kaggle CPU，2026-11-22）**：私有同步 `minglinl99/laya-kaggle-relay-increment-sync-v99` 已 `COMPLETE`，查询水位 `2026-11-20T08:01:05Z`，累计私有数据集 version 45 经 Kaggle API 确认为 `Ready`。Relay index 374 条，新增 capture ID 8 个，374 个归档已核验；输入 661,252,183 bytes，无无效 manifest 项或远端 loss 记录。累计同步 manifest SHA-256 为 `a6018e769f0ab0a9f7a9181b4b053d231885076a149129bd4cdd942774f03eec`。
 
 - **Relay capture version 45 覆盖审计通过（Kaggle CPU，2026-11-22）**：`laya-market-cpu-relay-snapshot-audit-100` 与只读索引 `laya-relay-snapshot-audit-index-100` 均 `COMPLETE`，索引 `pass`。374 条 Relay 查询记录对应 8 个新增 ID；累计 402 个归档经 Rust 校验全部有效，重复 capture ID=0、缺 sidecar=0，capture manifest SHA-256 与同步值一致。aggTrades/funding-mark 最大覆盖间隔仍约 60.12/60.09 分钟，无超过 2 小时空档。finalized-funding 46 个归档含 5,566 次 HTTPError，成功页=0、funding 行=0；HTTP 状态码、错误类别、代理模式及响应服务器字段仍为空。原始行情、派生数据和完整审计报告留在 Kaggle。
+- **Relay v100 同步失败，v101 修复后发布 capture version 46（Kaggle CPU，2026-11-22）**：v100 kernel 终态 `ERROR`，错误为同步归档或 sidecar 缺失，未发布新数据版本。同步脚本现会在缺失时报告 capture ID、Relay 路径、目标归档/sidecar 路径及各自存在状态，便于定位损坏项。v101 `laya-kaggle-relay-increment-sync-v101` 完成；累计私有数据集 version 46 经 Kaggle 确认为 `Ready`。Relay index 382 条，新增 capture ID 8 个，382 个归档已核验；输入 666,496,297 bytes，无无效 manifest 项或远端 loss。累计同步 manifest SHA-256=`181e146476174d1dbf03dde41412c7a008dc5730be749f0260fc1998273616ad`。原始数据与完整运行产物留在 Kaggle。
 
 - **capture version 45 九组标签矩阵 v99 完成（Kaggle CPU，2026-11-22）**：`laya-market-cpu-label-sensitivity-99` 与只读索引 `laya-label-sensitivity-index-99` 均 `COMPLETE`；索引 `pass`、9/9 配置，Relay manifest SHA=`a6018e769f0ab0a9f7a9181b4b053d231885076a149129bd4cdd942774f03eec`。总 prepare 用时 1,621.689 秒，候选跳过明细 987 条；9 组 candidate schema 与逐配置 skip 明细/聚合通过。edge0 训练标签 flat/long/short：5m=`753/32/39`、15m=`629/95/96`、30m=`541/122/151`；held-out 标签只作描述，不用于选择设置，继续冻结 15m/edge0 作跨轮可比口径，无晋级结论。原始行情和完整报告留在 Kaggle。
 

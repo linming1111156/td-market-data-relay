@@ -140,7 +140,11 @@ try:
   raw_name=remote_name.removesuffix('.zst')
   target=OUT/path_parts[0]/path_parts[1]/(raw_name+'.zst')
   meta_path=target.with_name(target.name+'.meta.json')
-  if not target.is_file() or not meta_path.is_file(): raise RuntimeError('synced archive or sidecar is missing')
+  if not target.is_file() or not meta_path.is_file():
+   raise RuntimeError('synced archive or sidecar is missing for capture '
+    f"{capture_id}: relay_path={item['path']!r}, archive_path={str(target)!r}, "
+    f'archive_exists={target.is_file()}, sidecar_path={str(meta_path)!r}, '
+    f'sidecar_exists={meta_path.is_file()}')
   metadata=json.loads(meta_path.read_text())
   if metadata.get('capture_id')!=capture_id or metadata.get('raw_sha256')!=item['raw_sha256']:
    raise RuntimeError('synced archive sidecar does not match Relay manifest')
