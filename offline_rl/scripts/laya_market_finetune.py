@@ -468,6 +468,8 @@ def main() -> int:
                     gpu_budget["fallback_reason"] = "CUDA is unavailable"
         if device == "cuda" and not torch.cuda.is_available():
             raise ValueError("CUDA was requested but is unavailable")
+        if gpu_budget is not None:
+            gpu_budget["selected_device"] = device
         runtime_probe = {
             "selected_device": device,
             "torch_cuda_available": torch.cuda.is_available(),
@@ -475,6 +477,7 @@ def main() -> int:
             "cuda_device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
             "gpu_budget": gpu_budget,
         }
+        run["runtime_probe"] = runtime_probe
         print("Laya finetune runtime: " + json.dumps(runtime_probe, sort_keys=True), flush=True)
         base = Path(resolve_checkpoint_dir(args.base)).resolve(strict=True)
         base_manifest = checkpoint_files(base)

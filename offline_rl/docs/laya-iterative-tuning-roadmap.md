@@ -53,7 +53,7 @@ uvx --from kaggle --with six kaggle kernels logs \
 
 ## 产物与验收
 
-每个分支在 Kaggle `/kaggle/working` 下分别保留 checkpoint、`run.json` 和日志；评估预测保存为 `trading-evaluation-predictions.json`。顶层 summary 记录数据 manifest SHA、GPU 型号、配置、每支训练与评估指标、实际 GPU 小时和 `run.json` SHA。核心评估包括 accuracy、balanced accuracy、macro-F1、混淆矩阵、交易数、总费用、费用后净 PnL、单决策净 PnL、最大回撤和按时间切分的结果。运行状态或训练失败时，区分“未训练”“分支失败”和“已完成训练”，不得把准备成功当成训练成功。
+每个分支在 Kaggle `/kaggle/working` 下分别保留 checkpoint、`run.json` 和日志；评估预测保存为 `trading-evaluation-predictions.json`。`run.json` 持久化 `runtime_probe`（CUDA 是否可用、设备数、GPU 型号和选择设备）及额度门槛；顶层 summary 记录数据 manifest SHA、GPU 型号、配置、每支训练与评估指标、实际 GPU 小时和 `run.json` SHA。核心评估包括 accuracy、balanced accuracy、macro-F1、混淆矩阵、交易数、总费用、费用后净 PnL、单决策净 PnL、最大回撤和按时间切分的结果。运行状态或训练失败时，区分“未训练”“分支失败”和“已完成训练”，不得把准备成功当成训练成功。
 
 训练结果冻结后才能用 held-out 标签。训练脚本当前输出逐样本预测和真实标签，但仓库里的 v31 paper-trade builder 仍绑定 v24 运行；因此“将 v50 每轮预测与成熟真实 outcome 追加到累计数据集新版本，再以该版本启动下一轮”的端到端步骤尚未由现有脚本自动完成。文档和汇报必须明确这一实现边界，不能把 v31 数据集构建描述成 v50 反馈闭环已经完成。
 
