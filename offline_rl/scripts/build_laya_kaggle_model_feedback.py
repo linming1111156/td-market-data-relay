@@ -26,7 +26,7 @@ SOURCE_KERNEL=__KERNEL__
 EXPECTED_DATASET_ROUND=__DATASET_ROUND__
 FEEDBACK_ROUND=__FEEDBACK_ROUND__
 OUT=WORK/'laya-paper-trade-experience-model-feedback-v50'
-IS_RECURSIVE='recursive-round' in SOURCE_KERNEL
+IS_RECURSIVE='recursive-round' in FEEDBACK_ROUND
 SUMMARY_NAME=('laya-recursive-gpu-round-summary.json' if IS_RECURSIVE
               else 'laya-market-gpu-loss-ablation-v50-summary.json')
 SUMMARY_SCHEMA=('td_market_data_laya_recursive_gpu_round' if IS_RECURSIVE
