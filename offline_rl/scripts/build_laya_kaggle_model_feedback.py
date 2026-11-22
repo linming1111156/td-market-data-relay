@@ -107,9 +107,7 @@ for index,row in enumerate(decisions):
  timestamp=row.get('decision_time_unix_ms')
  if not isinstance(timestamp,int) or isinstance(timestamp,bool):
   raise ValueError(f'cumulative row {index} lacks an integer decision timestamp')
- if timestamp in by_timestamp:
-  raise ValueError(f'cumulative dataset contains duplicate timestamps: {timestamp}')
- by_timestamp[timestamp]=index
+ by_timestamp.setdefault(timestamp,[]).append(index)
 sample_ids=[row.get('sample_id') for row in decisions]
 if any(not isinstance(value,str) for value in sample_ids) or len(sample_ids)!=len(set(sample_ids)):
  raise ValueError('cumulative dataset sample IDs are invalid or duplicated')
@@ -180,10 +178,13 @@ for branch in branches:
    'execution_status':'simulated_fill' if position else 'no_trade',
    'source_model_kernel':SOURCE_KERNEL,'source_run_json_sha256':run_sha,
    'prediction_file_sha256':prediction_sha}
-  previous_index=by_timestamp.get(timestamp)
-  if previous_index is None:
+  previous_indexes=by_timestamp.get(timestamp,[])
+  original=canonical(row)
+  matching_indexes=[index for index in previous_indexes
+                    if canonical(decisions[index].get('source_record'))==original]
+  if not matching_indexes:
    original=canonical(row)
-   sample_id=hashlib.sha256(f'{FEEDBACK_ROUND}:{evaluation_sha}:{timestamp}'.encode()).hexdigest()
+   sample_id=hashlib.sha256(f'{FEEDBACK_ROUND}:{evaluation_sha}:{timestamp}:{hashlib.sha256(original.encode()).hexdigest()}'.encode()).hexdigest()
    new_row=new_decisions.get(timestamp)
    if new_row is None:
     source_state=row.get('state') or {}
@@ -206,9 +207,7 @@ for branch in branches:
     raise ValueError('two loss branches disagree on a shared evaluation row')
    new_row['strategies'][strategy]=result
   else:
-   existing=decisions[previous_index]
-   if canonical(existing.get('source_record'))!=canonical(row):
-    raise ValueError(f'cumulative timestamp collides with different source data: {timestamp}')
+   existing=decisions[matching_indexes[0]]
    if existing.get('record_validity') not in ('valid','invalid'):
     raise ValueError('existing decision has an unsupported validity state')
    existing.setdefault('strategies',{})[strategy]={**result,
