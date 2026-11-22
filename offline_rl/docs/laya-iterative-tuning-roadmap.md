@@ -2,11 +2,12 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
-## 当前进度（2026-11-22 14:29 UTC）
+## 当前进度（2026-11-22 14:40 UTC）
 
 - 当前待运行轮次：v50，RLCD 与 soft-ce 两个 GPU 分支。
 - Kaggle 官方额度查询：已用 0.07h，剩余 29.93/30h；刷新时间为 2026-11-28 00:00 UTC。
 - `minglinl99/laya-gpu-loss-ablation-capture-v50` 状态仍为 `QUEUED`，日志为空。本轮尚未开始微调，尚无本轮模型效果或实际 GPU 训练时长。
+- Kaggle CLI 账号内 GPU kernel 列表只发现上述 v50 kernel；没有发现其他自有 GPU kernel 预留。配对计划总计 3 小时，额度充足。
 - 累计 paper-trade 数据集是私有 version 51，最新数据轮次为 `v105-relay-v49-15m-edge0-utcday-v1`。具体样本数以 Kaggle 内该版本的 `manifest.json` 为准；本机不下载或缓存数据文件。
 - `scripts/build_laya_kaggle_model_feedback.py` 已准备在 Kaggle 内核中核验完成分支、冻结评估与成熟 outcome，并发布累计数据集新版本；必须等 v50 有真实 CUDA 训练和冻结评估证据后才能运行。
 - 下一轮的训练输入仍需接入新增的累计数据集版本，并以未参与此前训练/评估的时间段做新留出集；在这条递归路径实现前，不得把当前反馈数据集发布描述为闭环已完成。
