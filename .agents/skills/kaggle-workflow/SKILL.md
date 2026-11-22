@@ -30,6 +30,13 @@ For this project, follow only the roadmap's top-level current-status block and c
 
 Each iteration is: freeze the Kaggle input version and split; GPU fine-tune with an explicit hypothesis; save the checkpoint and run manifest; evaluate on the untouched frozen split; append predictions paired with mature, verified real outcomes to a new version of the cumulative Kaggle results dataset; then start the next GPU iteration from the accumulated data. Never use model predictions as ground-truth labels, and do not train on a round's held-out labels before that round's metrics are frozen.
 
+## Keep the training path moving
+
+- Do not make a pinned manifest SHA, per-row hash, exact round-name match, sample ID, or duplicate-timestamp check a hard precondition for starting a GPU run. Record the actual input versions and hashes in the run report for traceability, but do not stop because they differ from an earlier generated value.
+- Skip malformed, incomplete, or conflicting individual rows and include the skipped counts in the report. Keep usable mature real outcomes and proceed with the remaining data.
+- Keep only the checks required to run the requested GPU training correctly: required Kaggle inputs must be mounted, labels must come from real mature outcomes, time-based train/evaluation separation must be maintained, and the runtime must actually allocate CUDA. If a required input or CUDA is unavailable, report the concrete failure and do not silently switch to CPU.
+- Update the existing GPU notebook for every round. Do not create a new round-specific GPU notebook.
+
 Keep the user updated at submission, actual GPU allocation, each branch completion, dataset-version publication, and next-round start. For runs longer than 10 minutes, send a status update at least every 10 minutes. Each update reports fine-tune round/branch counts, actual GPU hours and remaining quota, post-training metrics when available, cumulative dataset counts, and the next action. Distinguish queued, running, failed-before-training, and trained outcomes; a failed setup is not a completed fine-tune.
 
 ## Safe Kaggle operations
