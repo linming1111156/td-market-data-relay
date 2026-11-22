@@ -100,7 +100,7 @@ for name in ('paper-trade-decisions.jsonl','quality-events.jsonl'):
   raise ValueError('cumulative dataset file hash mismatch: '+name)
 
 decisions=read_jsonl(experience/'paper-trade-decisions.jsonl')
-historical={}; rejected=Counter(); legacy_missing_source_hash=0
+historical={}; conflicting_timestamps=set(); rejected=Counter(); legacy_missing_source_hash=0
 cumulative_timestamps={row.get('decision_time_unix_ms') for row in decisions
  if isinstance(row.get('decision_time_unix_ms'),int)
  and not isinstance(row.get('decision_time_unix_ms'),bool)}
@@ -137,10 +137,13 @@ for row in decisions:
  sample_id=row.get('sample_id')
  if not isinstance(sample_id,str) or not sample_id:
   raise ValueError('mature decision is missing a stable sample_id')
+ if ts in conflicting_timestamps: continue
  previous=historical.get(ts)
  if previous is not None and canonical(previous)!=canonical(source):
-  raise ValueError(f'conflicting cumulative records at timestamp {ts}')
+  historical.pop(ts,None); conflicting_timestamps.add(ts)
+  continue
  historical[ts]=source
+rejected['conflicting_cumulative_timestamps']+=len(conflicting_timestamps)
 if not historical: raise ValueError('cumulative dataset has no verified matured labels for training')
 
 def input_root(ref): return dataset_root(ref)
@@ -216,6 +219,7 @@ report={'schema':'td_market_data_laya_prepare_result','version':1,
  'fresh_relay_evaluation_overlap_rows':overlap_eval,
  'fresh_relay_evaluation_embargoed_rows':embargoed_eval,
  'legacy_rows_without_source_record_hash':legacy_missing_source_hash,
+ 'conflicting_cumulative_timestamps':len(conflicting_timestamps),
  'rejected_cumulative_rows':dict(sorted(rejected.items())),
  'source_experience_manifest_sha256':manifest_sha,
  'source_relay_manifest_sha256':relay_sha,
@@ -235,6 +239,7 @@ print(json.dumps({'event':'data_prepared','experience_manifest_sha256':manifest_
  'fresh_relay_evaluation_overlap_rows':overlap_eval,
  'fresh_relay_evaluation_embargoed_rows':embargoed_eval,
  'legacy_rows_without_source_record_hash':legacy_missing_source_hash,
+ 'conflicting_cumulative_timestamps':len(conflicting_timestamps),
  'label_counts':label_counts,'rejected_cumulative_rows':dict(rejected)},ensure_ascii=False,sort_keys=True),flush=True)
 
 branches=[]
