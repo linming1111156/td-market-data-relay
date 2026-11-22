@@ -222,7 +222,14 @@ def restore_to_archive(base: str, key: str, entry: dict, target: Path, relay_hos
     route = "/v1/captures/" + urllib.parse.quote(str(entry["id"]), safe="")
     compressed_hash = hashlib.sha256()
     try:
-        with request(base + route, key, timeout=180) as response, download.open("xb") as output:
+        try:
+            response_context = request(base + route, key, timeout=180)
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(
+                f"relay archive request failed for capture {entry['id']} "
+                f"at {entry.get('path')!r}: HTTP {error.code} {error.reason}"
+            ) from error
+        with response_context as response, download.open("xb") as output:
             declared_length = int(response.headers.get("Content-Length", "0"))
             if declared_length != entry["size_bytes"]:
                 raise RuntimeError(f"relay size changed for capture {entry['id']}")
