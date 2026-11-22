@@ -2,15 +2,17 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
-## 当前进度（2026-11-22 20:19 UTC）
+## 当前进度（2026-11-22 20:31 UTC）
 
-- v50 的 RLCD 与 soft-ce 两个分支均已在 Tesla T4 上完成微调和同一冻结留出集评估：各 753 训练行、203 评估行；实际 GPU 时间分别为 0.032350h、0.029335h。两支准确率均为 15.27%、balanced accuracy 33.33%、macro-F1 0.0883；预测全为 short，203 笔交易的费用后净 PnL 均为 -6394.925 bps。校准后 Brier 从 0.7593 降至约 0.6833、ECE 从约 0.312 降至约 0.212，但交易效果仍不合格，下一轮需继续改进。
-- v50 评估结果已通过 Kaggle feedback kernel v3 入库：累计 paper-trade dataset 私有 version 52，累计 1,153 条（1,138 条有效、15 条无效），本轮新增 131 条决策记录；两分支各有 203 条逐样本预测与成熟 outcome。发布 manifest SHA-256：`77e0cb652577437c13b363caa5bc31743434371851c90e0a22957de6b18ee3c1`。原始行情与完整运行产物仍留在 Kaggle。
-- feedback v2 失败原因已修复：历史累计集存在重复时间戳 `1795198560000`，早期重复样本被标记为无效；时间戳并非唯一键。发布器现按时间戳分组，并用原始 source record 内容匹配，保留历史记录与唯一 sample ID，不因无关的历史重复记录中止。
-- 下一轮 `laya-gpu-recursive-round-v51` kernel version 1 已提交，当前状态为 `RUNNING`；截至本次查询尚无日志，因此数据准备和 CUDA 分配都未确认，不报告为已开始训练。计划 RLCD 与 soft-ce 各 1.5 GPU 小时，共 3 小时。
-- Kaggle 官方额度（2026-11-22 20:19 UTC）：已用 2.45h，剩余 27.55/30h，2026-11-28 00:00 UTC 刷新。检查账号 GPU kernels 后未发现其他仍在运行或排队的 GPU kernel；v50 已取消，历史 GPU 任务已结束。新轮次状态为 `RUNNING` 但无日志，额度变化暂不归因于训练。额度充足，继续 GPU 优先。
-- 下一轮固定输入：累计 experience version 52（上列 SHA）；Relay increment version 51，`relay-increment-manifest.json` SHA-256 为 `878d44670d2119348149d29000074bd14e38b7706816cf9025e4503ea168a59e`。反馈前累计轮次为 `v105-relay-v49-15m-edge0-utcday-v1`。
-- 当前工作队列是已提交的递归 GPU 轮次。不得启动 CPU 微调；只有官方 GPU 额度耗尽或 Kaggle 明确拒绝 GPU/CUDA 并有运行日志，才允许回退。
+- 已完成 2 个配对轮次，共 4 次真实 CUDA 微调：v50 与 v51 的 RLCD、soft-ce 分支均使用 Tesla T4，并完成冻结评估。模型 checkpoint、输入和运行产物保留在 Kaggle。
+- v50：每支 753 训练行、203 留出行；实际 GPU 时间 0.032350h 和 0.029335h。两支准确率 15.27%、balanced accuracy 33.33%、macro-F1 0.0883，203 笔费用后净 PnL 均为 -6394.925 bps；预测全为 short。校准后 Brier 由 0.7593 降至约 0.6833，ECE 由约 0.312 降至约 0.212，交易效果仍不合格。
+- v51：准备出 132 条训练行（实际模型训练 119 条，另有 13 条用于校准）和 10 条留出行；新增 Relay 训练样本仅 1 条，训练/评估窗口分别有 845/194 条与累计记录重叠。两支各训练约 0.009073h/0.005686h；准确率 10%、balanced accuracy 33.33%、macro-F1 0.0606，10 笔费用后净 PnL 均为 -253.985 bps。该留出集样本很少，不作为充分效果结论。
+- v50 结果已发布到累计 paper-trade dataset version 52：新增 131 条决策记录、累计 1,153 条（1,138 有效、15 无效），manifest SHA-256 `77e0cb652577437c13b363caa5bc31743434371851c90e0a22957de6b18ee3c1`。v51 结果已发布到 version 53：新增 10 条，累计 1,163 条（1,148 有效、15 无效），manifest SHA-256 `513f5ccad121cc1a122c9d72cd6af893427e0d268035912d02867d78e1e35a2c`。
+- feedback v2 的失败原因已处理：历史累计集有重复时间戳（例如 `1795198560000`），故发布器按时间戳分组、按完整 source record 匹配，不再假定时间戳唯一。早期重复样本仍保留并标记无效。
+- v51 递归构建器日志显示 1,007 条累计行未通过逐行 source hash 条件。早期数据行缺少该字段；代码现接受缺少逐行 hash、但其所属累计 JSONL 文件已通过 manifest SHA 的记录，只继续排除显式不匹配的 hash。下一轮需要记录实际接受行数，确认历史数据不再被无故跳过。
+- Relay 同步 kernel `laya-kaggle-relay-increment-sync-109` version 1 已提交，目前 `RUNNING`，尚无日志/新数据集版本。它只在 Kaggle 同步新 capture，不进行模型训练、不占 GPU。
+- Kaggle 官方 GPU 额度（2026-11-22 20:31 UTC）：已用 2.68h，剩余 27.32/30h，刷新时间 2026-11-28 00:00 UTC。GPU 额度充足；下一轮先等 Relay 数据同步并检查新时间窗的训练与留出规模，再决定启动 GPU 微调，避免继续用过小的留出集。
+- 当前下一步只有：完成 v109 Relay 同步、读取其 Kaggle 内摘要并准备足量的新时间窗口，然后提交下一轮配对 GPU 微调。不得改用 CPU 微调。
 ## 当前实现入口
 
 | 文件 | 用途 |

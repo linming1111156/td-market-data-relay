@@ -100,7 +100,7 @@ for name in ('paper-trade-decisions.jsonl','quality-events.jsonl'):
   raise ValueError('cumulative dataset file hash mismatch: '+name)
 
 decisions=read_jsonl(experience/'paper-trade-decisions.jsonl')
-historical={}; rejected=Counter()
+historical={}; rejected=Counter(); legacy_missing_source_hash=0
 cumulative_timestamps={row.get('decision_time_unix_ms') for row in decisions
  if isinstance(row.get('decision_time_unix_ms'),int)
  and not isinstance(row.get('decision_time_unix_ms'),bool)}
@@ -125,7 +125,12 @@ for row in decisions:
  source_bytes=canonical(source).encode('utf-8')
  source_hashes={hashlib.sha256(source_bytes).hexdigest(),
   hashlib.sha256(source_bytes+b'\n').hexdigest()}
- if row.get('source_record_sha256') not in source_hashes:
+ source_hash=row.get('source_record_sha256')
+ if source_hash is None:
+  # Older cumulative rounds do not carry per-record hashes. Their source rows
+  # remain covered by the verified dataset file hash above.
+  legacy_missing_source_hash+=1
+ elif source_hash not in source_hashes:
   rejected['source_record_hash_mismatch']+=1; continue
  if maturity!=ts+HORIZON_MINUTES*60_000:
   rejected['invalid_label_maturity']+=1; continue
@@ -210,6 +215,7 @@ report={'schema':'td_market_data_laya_prepare_result','version':1,
  'fresh_relay_train_overlap_rows':fresh_train_overlap,
  'fresh_relay_evaluation_overlap_rows':overlap_eval,
  'fresh_relay_evaluation_embargoed_rows':embargoed_eval,
+ 'legacy_rows_without_source_record_hash':legacy_missing_source_hash,
  'rejected_cumulative_rows':dict(sorted(rejected.items())),
  'source_experience_manifest_sha256':manifest_sha,
  'source_relay_manifest_sha256':relay_sha,
@@ -228,6 +234,7 @@ print(json.dumps({'event':'data_prepared','experience_manifest_sha256':manifest_
  'fresh_relay_train_rows_added':fresh_train_added,'fresh_relay_train_overlap_rows':fresh_train_overlap,
  'fresh_relay_evaluation_overlap_rows':overlap_eval,
  'fresh_relay_evaluation_embargoed_rows':embargoed_eval,
+ 'legacy_rows_without_source_record_hash':legacy_missing_source_hash,
  'label_counts':label_counts,'rejected_cumulative_rows':dict(rejected)},ensure_ascii=False,sort_keys=True),flush=True)
 
 branches=[]

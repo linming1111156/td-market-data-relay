@@ -26,7 +26,11 @@ SOURCE_KERNEL=__KERNEL__
 EXPECTED_DATASET_ROUND=__DATASET_ROUND__
 FEEDBACK_ROUND=__FEEDBACK_ROUND__
 OUT=WORK/'laya-paper-trade-experience-model-feedback-v50'
-SUMMARY_NAME='laya-market-gpu-loss-ablation-v50-summary.json'
+IS_RECURSIVE='recursive-round' in SOURCE_KERNEL
+SUMMARY_NAME=('laya-recursive-gpu-round-summary.json' if IS_RECURSIVE
+              else 'laya-market-gpu-loss-ablation-v50-summary.json')
+SUMMARY_SCHEMA=('td_market_data_laya_recursive_gpu_round' if IS_RECURSIVE
+                else 'td_market_data_laya_gpu_loss_ablation')
 
 def canonical(value):
  return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'))
@@ -80,8 +84,10 @@ for path in INPUT.rglob(SUMMARY_NAME):
  summaries.append((path,value))
 if len(summaries)!=1: raise FileNotFoundError(f'expected one source kernel summary; found {len(summaries)}')
 summary_path,summary=summaries[0]
-if summary.get('schema')!='td_market_data_laya_gpu_loss_ablation' or summary.get('version')!=1:
+if summary.get('schema')!=SUMMARY_SCHEMA or summary.get('version')!=1:
  raise ValueError('source GPU kernel did not publish the expected summary schema')
+if IS_RECURSIVE and summary.get('status')!='trained_and_frozen_evaluated':
+ raise ValueError('source recursive GPU kernel has not completed training and frozen evaluation')
 gpu_device=str(summary.get('gpu_device') or '')
 if 'Tesla' not in gpu_device:
  raise ValueError(f'source summary does not prove a Tesla GPU: {gpu_device!r}')
@@ -118,7 +124,7 @@ branch_summaries=[]
 strategy_names=[]
 for branch in branches:
  loss=branch.get('loss')
- if branch.get('status')!='complete' or loss not in ('rlcd','soft-ce'):
+ if branch.get('status','complete')!='complete' or loss not in ('rlcd','soft-ce'):
   raise ValueError('source kernel contains an incomplete or unknown loss branch')
  strategy='laya_'+FEEDBACK_ROUND.replace('-','_')+'_'+loss.replace('-','_')
  if strategy in (manifest.get('strategies') or []):
@@ -135,8 +141,8 @@ for branch in branches:
   raise ValueError('branch manifest does not prove CUDA training time')
  if config.get('loss')!=loss:
   raise ValueError('branch loss does not match its run manifest')
- prediction_sha=run.get('trading_evaluation_predictions_sha256')
- evaluation_sha=run.get('evaluation_jsonl_sha256')
+ prediction_sha=branch.get('prediction_sha') or run.get('trading_evaluation_predictions_sha256')
+ evaluation_sha=branch.get('evaluation_sha') or run.get('evaluation_jsonl_sha256')
  if not isinstance(prediction_sha,str) or not isinstance(evaluation_sha,str):
   raise ValueError('branch is missing prediction/evaluation provenance hashes')
  prediction_path=find_hashed_file('trading-evaluation-predictions.json',prediction_sha)
