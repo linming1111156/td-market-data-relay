@@ -288,8 +288,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path,
                         default=Path("/kaggle/working/laya-market-finetune-v1"))
     parser.add_argument("--base", default="convaiinnovations/laya")
-    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto",
-                        help="auto prefers CUDA only with a fresh in-budget quota check; otherwise CPU")
+    parser.add_argument("--device", choices=("auto", "cuda"), default="auto",
+                        help="auto requires a fresh Kaggle quota check and uses CUDA while quota remains")
     parser.add_argument("--gpu-hours-used-7d", type=float,
                         help="required for GPU training: observed Kaggle GPU hours in the rolling last 7 days")
     parser.add_argument("--gpu-planned-hours", type=float,
@@ -357,20 +357,22 @@ def main() -> int:
         used, planned = args.gpu_hours_used_7d, args.gpu_planned_hours
         quota_verified = (used is not None and planned is not None
                           and math.isfinite(used) and math.isfinite(planned)
-                          and used >= 0 and planned > 0)
-        if args.device == "cuda" and not quota_verified:
-            raise ValueError("CUDA training requires a fresh 7-day usage check and valid --gpu-hours-used-7d/--gpu-planned-hours")
-        within_plan = bool(quota_verified and used <= 30 and used + planned <= 30)
+                          and 0 <= used <= 30 and planned > 0)
+        if not quota_verified:
+            raise ValueError("model training requires a fresh Kaggle 7-day GPU quota check and valid --gpu-hours-used-7d/--gpu-planned-hours")
+        within_plan = used < 30 and used + planned <= 30
+        if used < 30 and not within_plan:
+            raise ValueError("GPU quota remains but this plan exceeds it; shorten the GPU plan or wait for quota refresh instead of falling back to CPU")
         if args.device == "cuda" and not within_plan:
             raise ValueError("GPU budget gate failed: planned total must stay within the official 30 h rolling 7-day limit")
-        gpu_budget = {"observed_hours_used_rolling_7d": used if quota_verified else None,
-                      "planned_hours": planned if quota_verified else None,
-                      "planned_total_hours": used + planned if quota_verified else None,
-                      "quota_verified": quota_verified,
+        gpu_budget = {"observed_hours_used_rolling_7d": used,
+                      "planned_hours": planned,
+                      "planned_total_hours": used + planned,
+                      "quota_verified": True,
                       "within_plan": within_plan,
                       "plan_limit_hours": 30,
                       "hard_limit_hours": 30,
-                      "operator_checked_quota_before_run": quota_verified}
+                      "operator_checked_quota_before_run": True}
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.mkdir()
@@ -457,15 +459,16 @@ def main() -> int:
 
         device = args.device
         if args.device == "auto":
-            device = "cuda" if gpu_budget and gpu_budget["within_plan"] and torch.cuda.is_available() else "cpu"
-            if gpu_budget is not None:
-                gpu_budget["selected_device"] = device
-                if device == "cpu" and not gpu_budget["quota_verified"]:
-                    gpu_budget["fallback_reason"] = "current rolling quota was not verified"
-                elif device == "cpu" and not gpu_budget["within_plan"]:
-                    gpu_budget["fallback_reason"] = "GPU plan limit reached; continuing on CPU"
-                elif device == "cpu" and not torch.cuda.is_available():
-                    gpu_budget["fallback_reason"] = "CUDA is unavailable"
+            if gpu_budget is None:
+                raise ValueError("model training requires a verified Kaggle GPU quota")
+            if gpu_budget["within_plan"]:
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                if device == "cpu":
+                    gpu_budget["fallback_reason"] = "Kaggle did not provide CUDA; runtime probe confirmed CUDA is unavailable"
+            else:
+                device = "cpu"
+                gpu_budget["fallback_reason"] = "official rolling GPU quota is exhausted"
+            gpu_budget["selected_device"] = device
         if device == "cuda" and not torch.cuda.is_available():
             raise ValueError("CUDA was requested but is unavailable")
         if gpu_budget is not None:

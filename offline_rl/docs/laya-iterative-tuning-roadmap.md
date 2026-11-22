@@ -58,7 +58,7 @@ uvx --from kaggle --with six kaggle kernels logs \
 
 ## GPU 与 CPU 选择规则
 
-通用微调脚本支持 `--device auto|cpu|cuda`。`auto` 在额度没有核验、计划超限或 CUDA 不可用时可能选择 CPU，所以 GPU 主线 notebook 不使用 `auto`：它先要求 `torch.cuda.is_available()`，再对每个分支显式传 `--device cuda`。CUDA 不可用会失败，不会悄悄切换 CPU。GPU 训练须提供新鲜的 7 天额度值和计划时长；脚本按官方 30 小时额度门槛校验。
+通用微调脚本支持 `--device auto|cuda`，不提供可绕过额度门槛的 `--device cpu`。训练必须提交新鲜的 7 天额度值和计划时长；额度未知会停止运行。额度仍有剩余但计划超出可用额度时也会停止，要求缩短 GPU 计划或等待额度刷新。`auto` 在额度有余且 CUDA 可用时选择 CUDA；只有官方额度确实耗尽，或运行时明确检测到 Kaggle 未提供 CUDA，才记录证据并回退 CPU。GPU 主线 notebook 仍显式检查 CUDA，并传 `--device cuda`，避免隐式设备选择。
 
 不要为了消耗额度重复实验。只有官方滚动 GPU 额度耗尽，或 Kaggle 明确拒绝 GPU/CUDA 分配且留有日志证据，才可为尚未完成的 GPU 兼容任务考虑 CPU 回退；此时必须先记录原因。CPU-only 的历史数据整理脚本不等于模型微调任务，也不应被当成 GPU 微调的替代项。
 
