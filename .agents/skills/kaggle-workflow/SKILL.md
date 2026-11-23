@@ -24,6 +24,13 @@ Before starting or falling back from any GPU-compatible mainline task:
 4. Continue with valid GPU-compatible work until the official rolling quota reaches zero. Only then may unfinished GPU-compatible work fall back to Kaggle CPU. CPU fallback is also allowed when Kaggle explicitly refuses GPU allocation or the run proves CUDA unavailable; record that evidence. Unknown quota or an inconvenient runtime estimate is not grounds for CPU fallback.
 5. Keep CPU-native tasks on Kaggle CPU: examples include Rust archive validation, label matrix generation, and traditional rules or logistic-regression baselines. Do not repeat an experiment solely to consume quota or exceed the official limit.
 
+### When a GPU kernel reports `QUEUED`
+
+- Do not infer that the run is stuck, failed, or that GPU allocation is unavailable from `QUEUED` alone.
+- Open the existing Kaggle notebook in EgoLite and inspect the web UI's Draft Session and Active Events. Confirm whether the interactive GPU session is open and what the page reports before deciding what to do next.
+- The user has confirmed the existing GPU notebook can run normally when its session is opened. Reuse that existing GPU notebook/session; do not create another GPU project to work around a queued status.
+- Report the observed page/session state and continue monitoring or submit work through that session as appropriate. Treat the run as failed only when the Kaggle page or run logs provide concrete failure evidence.
+
 Record quota before/after, requested and actual device, GPU hours, and any fallback reason with the task's results. Where a roadmap exists, update its evidence after each major task, then commit and push the completed change as the user requested.
 
 For this project, follow only the roadmap's top-level current-status block and current GPU iteration loop. Treat older CPU baselines, audits, and historical "next step" notes as evidence, not as queued work. Do not start a CPU-only backlog ahead of an available GPU-compatible fine-tuning task. CPU fallback remains limited to official quota exhaustion or a recorded Kaggle GPU/CUDA allocation failure.
