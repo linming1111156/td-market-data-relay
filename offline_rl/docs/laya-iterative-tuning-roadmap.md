@@ -4,13 +4,14 @@
 
 ## 当前进度（2026-11-23）
 
-- 最新微调轮次为 `gpu-recursive-round-v54`，运行在固定 Kaggle GPU notebook `minglinl99/laya-gpu-finetune` version 13，没有新建 GPU 项目。Kaggle 日志确认实际使用 2×Tesla T4/CUDA；本轮 1,079 条训练行、10 条冻结留出行，RLCD 与 soft-ce 各完成一次微调，GPU 时间分别为 0.021055h 与 0.019288h（合计 0.040343h）。两支在 10 条留出上的 accuracy 为 0.30、balanced accuracy 为 0.333、macro-F1 为 0.154；费用后净 PnL 均为 -324.963 bps。样本很少且交易结果为负，尚无费用后盈利证据。
-- 结果反馈沿用现有 notebook `minglinl99/laya-model-feedback-gpu-recursive-round-v53` version 12。Kaggle Data Explorer 显示 paper-trade version 57 Ready；v56 是先前误挂载旧轮次结果的历史版本。v57 manifest 的最新轮次为 `gpu-recursive-round-v54`，source kernel 指向固定 GPU notebook；新增 10 条，累计 1,202 条决策（1,187 有效、15 无效）。RLCD 与 soft-ce 的逐样本预测均已配对加入，且本轮模型已完成冻结评估。下一步检查现有 Relay 同步项目是否有新 capture；只有出现新的、已成熟且未用于评估的时间窗口后才启动下一轮 GPU 微调。
+- 上一轮微调（`gpu-recursive-round-v54`）运行在固定 Kaggle GPU notebook `minglinl99/laya-gpu-finetune` version 13。Kaggle 日志确认实际使用 2×Tesla T4/CUDA；1,079 条训练行、10 条冻结留出，RLCD 与 soft-ce GPU 时间分别 0.021055h 与 0.019288h。两支 accuracy 为 0.30、balanced accuracy 为 0.333、macro-F1 为 0.154，费用后净 PnL 均为 -324.963 bps；样本少且结果为负，尚无盈利证据。
+- v54 的结果反馈发布在 paper-trade version 57：新增 10 条，累计 1,202 条决策（1,187 有效、15 无效）。v56 是早前误挂载旧轮次结果的历史版本；v57 manifest 确认最新轮次为 v54。
 - 固定 Relay 同步项目 `minglinl99/laya-kaggle-relay-increment-sync-main` version 5 在 2026-11-23 03:55 UTC 完成一次增量检查，并向原累计 Relay dataset 发布 version 56：新增 14 个 capture ID，累计 543 个归档、846,341,281 输入字节、0 个无效项，remote loss records 为 0。manifest SHA-256 `d128103c6ecd8329b694da6f8ae15f928d0d3c41a3689a23908a83b1d4f1e83c`；Kaggle Data Explorer 确认 version 56，发布 session 已停止。原始 capture 仍只留 Kaggle。
 - 2026-11-23 04:01 UTC 官方 Kaggle CLI 查询：GPU 已用 6.97h、剩余 23.03h/30h，额度刷新时间为 2026-11-28 00:00 UTC。已列出的四个固定项目中 GPU 微调和 Relay 同步运行均完成；反馈 Draft Session 已停止。`~/.kaggle/access_token` 已存在，官方 CLI 认证可用；凭据不进入代码、文档或提交。
 - 固定 GPU notebook version 14 已使用累计 paper-trade v57 和 Relay increment v56，前序轮次为 `gpu-recursive-round-v54`。GPU 环境确认实际分配 2×Tesla T4。数据准备完成：1,089 训练行、8 条新鲜后置留出，Relay 新增 1 条可训练记录；候选评估中 219 条与累计记录重叠并已排除，累计冲突时间戳 99 条按逐行规则处理。CPU 归档准备缓存未命中，在 Kaggle `/kaggle/working` 重建，原始数据未下载到本机。
 - v55 实际在 Kaggle Draft Session 完成了 RLCD 和 soft-ce 两支 CUDA 微调与冻结评估，使用 Tesla T4、各 1 epoch；RLCD/soft-ce GPU 时间分别 0.017745h/0.018023h，合计 0.035768h。每支用 981 条模型训练行、108 条校准行、8 条冻结留出。两支 accuracy 均为 0.125、balanced accuracy 0.333、macro-F1 0.0741；8 笔交易费用后净 PnL 均为 -255.636 bps，预测全部为 short。soft-ce 的 loss 从 1.2428 降至 1.1255，ECE 从 0.3457 降至 0.2403，Brier 从 0.7722 降至 0.6851；小留出与负 PnL 不支持盈利或泛化改善结论。v55 汇总状态为 `trained_and_frozen_evaluated`，manifest SHA-256 `7bc36c18ca40ecf7bff1193339b20be8799d7053ff2b7bad59a4a4df44e454e4`。此前中断的 RLCD 尝试只有准备文件、无 checkpoint；该不完整目录已在 Kaggle 清理，随后成功重跑。
 - 为让微调产物可供现有 feedback notebook 读取，已在同一 GPU 项目保存 version 15（Save & Run All）。旧 Draft Session 已停止，官方 CLI 与网页均显示 version 15 为 `QUEUED`；因此 Draft 结果已核实，但可挂载的正式 kernel output 尚待该版本完成。提交前 GPU 额度已用 7.47h、剩余 22.53h/30h；版本完成后先核实 Kaggle 输出和 GPU 运行回执，再运行现有 feedback notebook 发布 paper-trade 新版。不要重复建 GPU 项目。
+- 已将同一个 feedback 项目 `minglinl99/laya-model-feedback-gpu-recursive-round-v53` 更新为 version 13（只保存未运行），配置为回灌 `gpu-recursive-round-v55`、基于累计 paper-trade 数据集并读取固定 GPU notebook `minglinl99/laya-gpu-finetune` 的产物；避免 v12 重复处理 v54。2026-11-23 04:47 UTC 再查官方 CLI 与 Kaggle 页面，GPU version 15 仍显示 `QUEUED`，额度仍为已用 7.47h、剩余 22.53h/30h；不是失败状态，继续跟踪同一提交。
 ### 历史实验记录（不代表当前运行状态）
 
 - v50 与 v51 的 RLCD、soft-ce 分支均使用 Tesla T4 并完成冻结评估；checkpoint、输入和运行产物保留在 Kaggle。
