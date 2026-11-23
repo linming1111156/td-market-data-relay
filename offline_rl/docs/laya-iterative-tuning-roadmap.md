@@ -2,13 +2,14 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
-## 当前进度（截至 2026-11-23 10:39 UTC）
+## 当前进度（截至 2026-11-23 11:34 UTC）
 
-- 递归轮次 `gpu-recursive-round-v56` 已在固定 GPU notebook `minglinl99/laya-gpu-finetune` version 16 完成。输入为 paper-trade version 58 和 Relay increment version 57；训练 1,097 行、冻结留出 24 行。Kaggle 日志确认 Tesla T4/CUDA：RLCD 0.023955 GPU 小时，soft-ce 0.021232 小时。两支 accuracy 0.1667、balanced accuracy 0.3333、macro-F1 0.0952，费用后净 PnL 均为 -818.608 bps；相比 v55 的 -255.636 bps 更差，不能认为策略改善。soft-ce 的 Brier 从 0.7625 降到 0.6825、ECE 从 0.3104 降到 0.1997，但未改善交易收益。
-- 现有 feedback 项目 `minglinl99/laya-model-feedback-gpu-recursive-round-v53` version 16 已将 v56 的 24 条逐样本预测和成熟真实 outcome 发布到累计 paper-trade version 59：1,234 条决策（1,219 有效、15 无效），manifest SHA-256 `e0f42e1aa32a3756b95a0bd7fe59b3e32e9150e5b0f0ef1eb154ebe56cdea225`。feedback version 15 曾因把模型轮次误当成数据 manifest `round_id` 而失败；累计数据集的 `round_id` 是 `v105-relay-v49-15m-edge0-utcday-v1`，改正后 version 16 发布成功。
-- 现有 Relay 同步项目 `minglinl99/laya-kaggle-relay-increment-sync-main` version 7 已完成，累计 Relay dataset version 58 新增 1 个 capture，累计 594 个归档、905,547,315 输入字节，0 个无效项、0 个 remote loss record；manifest SHA-256 `af9d530f53a2b77844f5c629c9c55ace75ec6882049e3bf6faf80804b09f6290`。原始 capture 只留 Kaggle。
-- 下一轮 `gpu-recursive-round-v57` 已基于 paper-trade v59 与 Relay v58 推送到同一个 GPU 项目 version 17。2026-11-23 10:38 UTC CLI 与 EgoLite Active Events 都显示 `QUEUED`；网页显示 version 17 请求 GPU T4 x2，原 Draft Session 已恢复并打开约 6 分钟，当前尚无本轮 CUDA 或训练输出证据。不要重复 push；先继续检查同一网页 session 和 Active Events，再按实际运行日志确认 CUDA。
-- 最近官方额度查询为 GPU 已用 8.50h、剩余 21.50h/30h，刷新时间 2026-11-28 00:00 UTC。之前的 GPU 微调、feedback 与 Relay 同步运行均为完成状态；当前没有 CPU 微调任务。
+- 递归轮次 `gpu-recursive-round-v56` 已在固定 GPU notebook `minglinl99/laya-gpu-finetune` version 16 完成。输入为 paper-trade version 58 和 Relay increment version 57；训练 1,097 行、冻结留出 24 行。Kaggle 日志确认 Tesla T4/CUDA：RLCD 0.023955 GPU 小时，soft-ce 0.021232 小时。两支 accuracy 0.1667、balanced accuracy 0.3333、macro-F1 0.0952，费用后净 PnL 均为 -818.608 bps；相比 v55 的 -255.636 bps 更差，不能认为策略改善。
+- 递归轮次 `gpu-recursive-round-v57` 已复用固定 GPU notebook 的交互 Draft Session 完成；网页显示 Draft Session 为 Running、GPU T4 ×2。摘要与 run manifests 证明 CUDA 实际训练 1,121 行（1,009 训练、112 校准），冻结留出只有 2 行。RLCD 与 soft-ce 分别使用 0.022465h、0.018863h GPU 时间；两支 accuracy 0.50、macro-F1 0.222、费用后净 PnL 均为 -24.519 bps。2 条留出不足以判断模型是否改善。
+- v57 的摘要、两支 run manifest、evaluation、逐样本预测与 checkpoint 已发布至 Kaggle 私有 artifacts dataset `minglinl99/laya-gpu-recursive-round-v57-artifacts`；网页显示 36 个文件，处理完成。feedback kernel 已将 2 条成熟真实 outcome 和逐样本预测追加到累计 paper-trade version 60（Ready）：累计 1,236 条决策（1,221 有效、15 无效），manifest SHA-256 `8fcc02ea3e6a6260c8b4aea4584e992dc342f483a348e78ab090a98662ad83ca`。该 feedback 项目当前 slug 为 `minglinl99/laya-model-feedback-gpu-recursive-round-v57`。
+- Relay increment version 58（Ready）累计 594 个归档、905,547,315 输入字节；已复用同步项目 `minglinl99/laya-kaggle-relay-increment-sync-main` 推送 version 8，当前 CLI 状态为 `RUNNING`，尚无新日志，不能推断是否新增 capture。version 58 的 manifest SHA-256 为 `af9d530f53a2b77844f5c629c9c55ace75ec6882049e3bf6faf80804b09f6290`。原始 capture 只留 Kaggle。
+- 2026-11-23 11:34 UTC 官方额度查询为 GPU 已用 9.40h、剩余 20.60h/30h，刷新时间 2026-11-28 00:00 UTC。当前没有 CPU 模型微调任务。
+- 下一步先读取 Relay version 8 的实际日志和发布状态。若有新 capture，基于新输入构造后续时间段并保持 v57 的 2 条评估不进入新一轮训练/评估；只有得到未使用的新鲜留出行才启动下一轮现有 GPU notebook。若没有新 capture，等待后续数据，不重复使用旧留出集。
 
 ### 历史实验记录（不代表当前运行状态）
 

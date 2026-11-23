@@ -12,6 +12,7 @@ DATASET_REF = "minglinl99/laya-market-paper-trade-experience"
 SOURCE_KERNEL = "minglinl99/laya-gpu-loss-ablation-capture-v50"
 SOURCE_DATASET_ROUND = "v105-relay-v49-15m-edge0-utcday-v1"
 FEEDBACK_ROUND = "gpu-loss-ablation-capture-v50"
+PROJECT_SLUG = "laya-model-feedback-gpu-recursive-round-v57"
 
 
 def notebook_source(dataset_ref: str, source_kernel: str,
@@ -331,7 +332,9 @@ def main() -> int:
     parser.add_argument("--artifact-dataset-ref", default="",
                         help="Optional private dataset containing the frozen GPU run artifacts")
     args = parser.parse_args()
-    slug = f"laya-model-feedback-{args.feedback_round}"
+    # Keep every recursive feedback publication on the existing Kaggle project.
+    # The model round belongs in notebook code and dataset notes, not the project slug.
+    slug = PROJECT_SLUG
     source = notebook_source(args.dataset_ref, args.source_kernel,
                              args.source_dataset_round, args.feedback_round)
     notebook = {
@@ -348,7 +351,7 @@ def main() -> int:
     target.mkdir(parents=True, exist_ok=True)
     (target / f"{slug}.ipynb").write_text(json.dumps(notebook, ensure_ascii=False, separators=(",", ":")) + "\n")
     metadata = {
-        "id": f"minglinl99/{slug}", "title": f"Laya Model Feedback {args.feedback_round}",
+        "id": f"minglinl99/{slug}", "title": "Laya Model Feedback gpu-recursive-round-v57",
         "code_file": f"{slug}.ipynb", "language": "python", "kernel_type": "notebook",
         "is_private": True, "enable_gpu": False, "enable_tpu": False,
         "enable_internet": True, "keywords": ["laya", "model-feedback"],

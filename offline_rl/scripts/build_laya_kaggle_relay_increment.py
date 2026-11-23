@@ -213,7 +213,7 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--since-utc", default=SINCE_UTC,
                         help="UTC watermark; overlap the prior index slightly to avoid boundary loss")
-    parser.add_argument("--project-version", default="v31",
+    parser.add_argument("--project-version", default="main",
                         help="private Kaggle notebook slug/title suffix")
     args = parser.parse_args()
     project_root = Path(__file__).resolve().parents[2]
