@@ -2,15 +2,19 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
-## 当前进度（截至 2026-11-23 11:40 UTC）
+## 当前进度（截至 2026-11-23 12:11 UTC）
 
 - 递归轮次 `gpu-recursive-round-v56` 已在固定 GPU notebook `minglinl99/laya-gpu-finetune` version 16 完成。输入为 paper-trade version 58 和 Relay increment version 57；训练 1,097 行、冻结留出 24 行。Kaggle 日志确认 Tesla T4/CUDA：RLCD 0.023955 GPU 小时，soft-ce 0.021232 小时。两支 accuracy 0.1667、balanced accuracy 0.3333、macro-F1 0.0952，费用后净 PnL 均为 -818.608 bps；相比 v55 的 -255.636 bps 更差，不能认为策略改善。
 - 递归轮次 `gpu-recursive-round-v57` 已复用固定 GPU notebook 的交互 Draft Session 完成；网页显示 Draft Session 为 Running、GPU T4 ×2。摘要与 run manifests 证明 CUDA 实际训练 1,121 行（1,009 训练、112 校准），冻结留出只有 2 行。RLCD 与 soft-ce 分别使用 0.022465h、0.018863h GPU 时间；两支 accuracy 0.50、macro-F1 0.222、费用后净 PnL 均为 -24.519 bps。2 条留出不足以判断模型是否改善。
 - v57 的摘要、两支 run manifest、evaluation、逐样本预测与 checkpoint 已发布至 Kaggle 私有 artifacts dataset `minglinl99/laya-gpu-recursive-round-v57-artifacts`；网页显示 36 个文件，处理完成。feedback kernel 已将 2 条成熟真实 outcome 和逐样本预测追加到累计 paper-trade version 60（Ready）：累计 1,236 条决策（1,221 有效、15 无效），manifest SHA-256 `8fcc02ea3e6a6260c8b4aea4584e992dc342f483a348e78ab090a98662ad83ca`。该 feedback 项目当前 slug 为 `minglinl99/laya-model-feedback-gpu-recursive-round-v57`。
-- Relay increment version 59（Ready）累计 602 个归档、910,457,073 输入字节；version 8 新增 8 个 capture ID，0 个无效项、0 个 remote loss record；manifest SHA-256 `d599489ac44d7943a42232292bf35ed6f842126fb5c3390eabea8236439934e8`。原始 capture 只留 Kaggle。
-- CPU 数据准备项目 `minglinl99/laya-cpu-data-preparation` version 8 正在处理 Relay version 59；尚未收到行数和缓存结果。此步骤只准备数据，不是模型微调。
-- 2026-11-23 11:40 UTC 官方额度查询为 GPU 已用 9.50h、剩余 20.50h/30h，刷新时间 2026-11-28 00:00 UTC。当前没有 CPU 模型微调任务。
-- 下一步读取 CPU preparation version 8 的真实日志，基于 paper-trade v60 和 Relay v59 冻结新的时间切分。保持 v57 的 2 条评估不进入新一轮训练/评估；只有未使用的新鲜留出行可用时，才在同一 GPU notebook 启动下一轮。
+- 递归轮次 `gpu-recursive-round-v58` 已在同一个 `minglinl99/laya-gpu-finetune` version 19 完成，EgoLite Active Events 显示 version 19 请求 GPU T4 ×2 并成功；日志确认 Tesla T4/CUDA。训练 1,123 行，冻结留出 4 行，两支 GPU 时间分别为 0.023363h、0.019415h。两支 accuracy、balanced accuracy、macro-F1 均为 0，费用后净 PnL 均为 -99.029 bps。样本仍很少，没有看到效果改善。
+- v58 的成熟 outcome 和逐样本预测已追加到累计 paper-trade version 61（Ready）：新增 4 条，累计 1,240 条（1,225 有效、15 无效），manifest SHA-256 `cfee0d47e1b2dd75c1c974b82ceff4b6e07e73bffcfebea4db999168814ee5f8`。
+- Relay increment version 59（Ready）累计 602 个归档、910,457,073 输入字节；version 8 新增 8 个 capture ID，0 个无效项、0 个 remote loss record；manifest SHA-256 `d599489ac44d7943a42232292bf35ed6f842126fb5c3390eabea8236439934e8`。CPU 数据准备项目 version 8 在 Kaggle 生成 889 训练、237 候选评估行（仅数据准备，不是微调）。
+- Relay increment version 60（Ready）累计 606 个归档、911,496,272 输入字节；version 9 新增 4 个 capture ID，0 个无效项、0 个 remote loss record；manifest SHA-256 `cd203d4a077098b7b56f03aee693be690044e1adf5b62f07a4cd9c4cd5a2016b`。CPU 数据准备项目 version 9 生成 892 训练、236 候选评估行（仅数据准备，不是微调）。
+- 递归轮次 `gpu-recursive-round-v59` 已在固定 GPU notebook version 20 完成。输入 paper-trade v61、Relay v60 和 version 9 的 Kaggle CPU 准备输出；Tesla T4/CUDA 训练 1,127 行，冻结留出只有 2 行，两支合计 0.042152 GPU 小时。两支 accuracy、balanced accuracy、macro-F1 均为 0，费用后净 PnL 均为 -60.068 bps。
+- v59 的成熟 outcome 与逐样本预测已追加到累计 paper-trade version 62（Ready）：新增 2 条，累计 1,242 条（1,227 有效、15 无效），manifest SHA-256 `d2c9a95370d1fd7037c0756115f4929f4b9664e2e9cf516f73a19f9e6e690c0f`。feedback builder 已改为始终复用同一个 feedback Kaggle 项目；Relay builder 默认也固定复用 `laya-kaggle-relay-increment-sync-main`，GPU notebook 固定不变。
+- 最近官方额度查询为 2026-11-23 12:11 UTC：GPU 已用 10.10h、剩余 19.90h/30h，刷新时间 2026-11-28 00:00 UTC。没有 CPU 模型微调。
+- 下一步先检查 Relay 是否有新 capture；如有则更新现有 Relay 与 CPU 数据准备项目，并从 paper-trade v62 生成未进入先前轮次的新鲜时间窗。可用新鲜留出行确认后，在同一个 GPU notebook 推送下一轮；不重复使用 v57–v59 的 held-out outcome。
 
 ### 历史实验记录（不代表当前运行状态）
 
