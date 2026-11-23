@@ -2,7 +2,12 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
-## 当前进度（截至 2026-11-23 12:37 UTC）
+## 当前进度（截至 2026-11-23 13:18 UTC）
+
+- 递归轮次 `gpu-recursive-round-v61` 已在固定 GPU notebook `minglinl99/laya-gpu-finetune` version 23 完成；网页 Active Events 显示 T4 ×2 成功，Kaggle 日志记录 Tesla T4/CUDA、1,131 条训练数据和 2 条冻结留出。RLCD 与 soft-ce 分支分别消耗 0.025144h、0.022553h GPU 时间（合计 0.047697h）；两支 accuracy、macro-F1 均为 0，费用后净 PnL 均为 -27.612 bps。2 条留出不足以判断模型改善。
+- `gpu-recursive-round-v61` 的成熟真实 outcome 和对应逐样本预测已由现有 feedback kernel v21 追加至 paper-trade dataset version 64（Ready），累计 1,246 条记录；版本说明为 `Add verified GPU model evaluation gpu-recursive-round-v61`。Relay increment dataset version 63（Ready）含 614 个归档、916,365,476 输入字节，最近一次同步新增/验证 3 个 capture ID，0 个无效项、0 个 remote loss record；manifest SHA-256 `074e63934704613dc7516f791ee228b43454c2f7811b3eb179af51152f113183`。Kaggle CPU 数据准备 version 12 生成 895 条训练和 237 条候选评估行（仅数据准备，未进行 CPU 微调）。
+- 2026-11-23 13:18 UTC 官方 Kaggle CLI 额度为已用 10.63h、剩余 19.37h/30h，刷新时间 2026-11-28 00:00 UTC。EgoLite 对固定 GPU notebook 的观察显示 Draft Session 为 Running，页面控制台有草稿自动保存 sequence 冲突；Active Events 的 GPU v23 和反馈 v21 均为 Successful。该保存冲突不是训练失败证据，避免在网页草稿未能保存时覆盖用户正在用的 notebook。
+- 当前最新训练仅有 2 条冻结留出，v61 的留出也已反馈进累计训练数据；没有确认到 v61 之后的新 Relay capture 或新鲜时间窗。因此暂不重复旧评估或启动无有效留出的下一轮。下一步检查固定 Relay 同步项目是否出现新 capture；若有，复用 CPU 准备项目缓存并在现有 GPU notebook 上准备新时间切分。提交前若 GPU 显示 `QUEUED`，先用 EgoLite 检查 Kaggle 网页 Draft Session 和 Active Events；不要仅依据 `QUEUED` 判断失败。
 
 - 递归轮次 `gpu-recursive-round-v56` 已在固定 GPU notebook `minglinl99/laya-gpu-finetune` version 16 完成。输入为 paper-trade version 58 和 Relay increment version 57；训练 1,097 行、冻结留出 24 行。Kaggle 日志确认 Tesla T4/CUDA：RLCD 0.023955 GPU 小时，soft-ce 0.021232 小时。两支 accuracy 0.1667、balanced accuracy 0.3333、macro-F1 0.0952，费用后净 PnL 均为 -818.608 bps；相比 v55 的 -255.636 bps 更差，不能认为策略改善。
 - 递归轮次 `gpu-recursive-round-v57` 已复用固定 GPU notebook 的交互 Draft Session 完成；网页显示 Draft Session 为 Running、GPU T4 ×2。摘要与 run manifests 证明 CUDA 实际训练 1,121 行（1,009 训练、112 校准），冻结留出只有 2 行。RLCD 与 soft-ce 分别使用 0.022465h、0.018863h GPU 时间；两支 accuracy 0.50、macro-F1 0.222、费用后净 PnL 均为 -24.519 bps。2 条留出不足以判断模型是否改善。
