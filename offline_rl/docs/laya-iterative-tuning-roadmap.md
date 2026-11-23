@@ -8,7 +8,8 @@
 - 结果反馈沿用现有 notebook `minglinl99/laya-model-feedback-gpu-recursive-round-v53` version 12。Kaggle Data Explorer 显示 paper-trade version 57 Ready；v56 是先前误挂载旧轮次结果的历史版本。v57 manifest 的最新轮次为 `gpu-recursive-round-v54`，source kernel 指向固定 GPU notebook；新增 10 条，累计 1,202 条决策（1,187 有效、15 无效）。RLCD 与 soft-ce 的逐样本预测均已配对加入，且本轮模型已完成冻结评估。下一步检查现有 Relay 同步项目是否有新 capture；只有出现新的、已成熟且未用于评估的时间窗口后才启动下一轮 GPU 微调。
 - 固定 Relay 同步项目 `minglinl99/laya-kaggle-relay-increment-sync-main` version 5 在 2026-11-23 03:55 UTC 完成一次增量检查，并向原累计 Relay dataset 发布 version 56：新增 14 个 capture ID，累计 543 个归档、846,341,281 输入字节、0 个无效项，remote loss records 为 0。manifest SHA-256 `d128103c6ecd8329b694da6f8ae15f928d0d3c41a3689a23908a83b1d4f1e83c`；Kaggle Data Explorer 确认 version 56，发布 session 已停止。原始 capture 仍只留 Kaggle。
 - 2026-11-23 04:01 UTC 官方 Kaggle CLI 查询：GPU 已用 6.97h、剩余 23.03h/30h，额度刷新时间为 2026-11-28 00:00 UTC。已列出的四个固定项目中 GPU 微调和 Relay 同步运行均完成；反馈 Draft Session 已停止。`~/.kaggle/access_token` 已存在，官方 CLI 认证可用；凭据不进入代码、文档或提交。
-- 下一步：只更新同一个 `minglinl99/laya-gpu-finetune` notebook，使用 paper-trade version 57 和 Relay increment version 56，将前序轮次设为 `gpu-recursive-round-v54`。先分段运行 GPU 环境与数据准备，查看新 capture 是否生成未泄漏、已成熟的后置留出；满足条件才在同一 notebook 启动 RLCD 与 soft-ce GPU 微调，否则停止 session 并等待新数据。计划额度为每支 1.5h，总计 3h；当前官方额度足够。
+- 固定 GPU notebook version 14 已使用累计 paper-trade v57 和 Relay increment v56，前序轮次为 `gpu-recursive-round-v54`。GPU 环境确认实际分配 2×Tesla T4。数据准备完成：1,089 训练行、8 条新鲜后置留出，Relay 新增 1 条可训练记录；候选评估中 219 条与累计记录重叠并已排除，累计冲突时间戳 99 条按逐行规则处理。CPU 归档准备缓存未命中，在 Kaggle `/kaggle/working` 重建，原始数据未下载到本机。
+- v55 的 RLCD cell 启动后被 `KeyboardInterrupt` 中断，运行约 67 秒；未得到 `run.json`、冻结指标或可用 GPU 微调结果，不计作成功训练。soft-ce 尚未启动。此轮官方额度由已用 6.97h 增至 7.24h，当前剩余 22.76h/30h，刷新时间 2026-11-28 00:00 UTC。下一步在同一 notebook 继续完成 RLCD 与 soft-ce 分段训练；每支完成后再冻结指标和执行 feedback。若中断留下同名输出目录，先在 Kaggle session 内查看其状态并续跑/清理该分支，不能把启动回执当作完成结果。
 ### 历史实验记录（不代表当前运行状态）
 
 - v50 与 v51 的 RLCD、soft-ce 分支均使用 Tesla T4 并完成冻结评估；checkpoint、输入和运行产物保留在 Kaggle。
