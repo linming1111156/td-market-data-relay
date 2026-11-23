@@ -58,6 +58,7 @@
 | `scripts/build_laya_kaggle_model_feedback.py` | 冻结评估后在 Kaggle 内核验逐样本预测与成熟真实 outcome，并发布累计数据集新版 |
 | `scripts/build_laya_kaggle_recursive_iteration.py` | 将累计真实标签与新 Relay 时间段组合，再启动下一轮双分支 GPU 微调 |
 | `scripts/build_laya_kaggle_cpu_data_preparation.py` | 在 Kaggle CPU 项目准备 Relay 时间切分数据并复用 session 缓存，供 GPU notebook 挂载 |
+| [`scripts/laya-kaggle-iteration.sh`](../scripts/laya-kaggle-iteration.sh) | 复用固定 Kaggle 项目执行 Relay、数据准备、GPU 递归轮和结果反馈；完整操作、统计和周期说明见 [Shell 工作流](laya-kaggle-shell-workflow.md) |
 | `bulk_engine/src/laya_prepare.rs` | 从 Relay capture 生成时间排序的训练集与评估集 |
 | `scripts/build_laya_kaggle_paper_trade_dataset.py` | 从固定的历史 v24 运行构建 v31 paper-trade 回放数据；它不是当前 v50 模型结果的自动追加器，也不负责训练模型 |
 
