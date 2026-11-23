@@ -328,6 +328,8 @@ def main() -> int:
     parser.add_argument("--source-kernel", default=SOURCE_KERNEL)
     parser.add_argument("--source-dataset-round", default=SOURCE_DATASET_ROUND)
     parser.add_argument("--feedback-round", default=FEEDBACK_ROUND)
+    parser.add_argument("--artifact-dataset-ref", default="",
+                        help="Optional private dataset containing the frozen GPU run artifacts")
     args = parser.parse_args()
     slug = f"laya-model-feedback-{args.feedback_round}"
     source = notebook_source(args.dataset_ref, args.source_kernel,
@@ -350,7 +352,9 @@ def main() -> int:
         "code_file": f"{slug}.ipynb", "language": "python", "kernel_type": "notebook",
         "is_private": True, "enable_gpu": False, "enable_tpu": False,
         "enable_internet": True, "keywords": ["laya", "model-feedback"],
-        "dataset_sources": [args.dataset_ref], "kernel_sources": [args.source_kernel],
+        "dataset_sources": [args.dataset_ref] + ([args.artifact_dataset_ref]
+            if args.artifact_dataset_ref else []),
+        "kernel_sources": [args.source_kernel],
         "competition_sources": [], "model_sources": [],
     }
     (target / "kernel-metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")

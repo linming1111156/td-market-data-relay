@@ -278,7 +278,7 @@ print(json.dumps({'event':'data_prepared','experience_manifest_sha256':manifest_
 
 branches=[]
 def train_branch(loss):
- output=WORK/f'laya-recursive-round-model-{loss}'
+ output=WORK/f'laya-after-{EXPECTED_FEEDBACK_ROUND}-model-{loss}'
  command=[sys.executable,str(ROOT/'offline_rl/scripts/laya_market_finetune.py'),
   '--relay-prepared-data-dir',str(prepared),'--output',str(output),'--device','cuda',
   '--gpu-hours-used-7d',str(QUOTA_USED),'--gpu-planned-hours',str(PLAN_HOURS),
