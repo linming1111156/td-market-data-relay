@@ -376,7 +376,7 @@ def main() -> int:
              "source":f"## {index}. {loss} 微调分支\n\n独立执行并实时输出训练进度。\n"},
             {"cell_type":"code","id":f"run-{loss}-branch","execution_count":None,
              "metadata":{},"outputs":[],"source":
-             f"print(json.dumps({{'event':'branch_cell_started','branch':'{loss}'}},flush=True))\n"
+             f"print(json.dumps({{'event':'branch_cell_started','branch':'{loss}'}}),flush=True)\n"
              f"branches.append(train_branch('{loss}'))\n"}])
     notebook = {"cells": [
         {"cell_type":"markdown","id":"recursive-gpu-notes","metadata":{},

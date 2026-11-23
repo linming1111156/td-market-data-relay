@@ -4,6 +4,7 @@
 
 ## 当前进度（2026-11-23）
 
+- 最新项目状态（2026-11-23）：Kaggle 官方 API 仍列出并可读取以下四个固定项目；本次将它们的 notebook 新版本保存到 Kaggle，均使用 `kernels push --no-run`，保存后没有执行：CPU 数据准备 v7、固定 GPU 微调 v8、VPS Relay 同步 v5、结果反馈 `gpu-recursive-round-v53` v4。GPU v8 按独立 code cells 划分环境/GPU 探测、数据准备、RLCD、soft-ce 和汇总，metadata 请求 Tesla T4。v7 的 RLCD cell 曾把 `flush=True` 传给 `json.dumps`；v8 已修正为传给 `print`。本次仅完成项目更新，未运行新数据准备或微调；官方额度查询为已用 4.23h、剩余 25.77/30h，刷新时间 2026-11-28 00:00 UTC。
 - 已完成 2 个配对轮次，共 4 次真实 CUDA 微调：v50 与 v51 的 RLCD、soft-ce 分支均使用 Tesla T4，并完成冻结评估。模型 checkpoint、输入和运行产物保留在 Kaggle。
 - v50：每支 753 训练行、203 留出行；实际 GPU 时间 0.032350h 和 0.029335h。两支准确率 15.27%、balanced accuracy 33.33%、macro-F1 0.0883，203 笔费用后净 PnL 均为 -6394.925 bps；预测全为 short。校准后 Brier 由 0.7593 降至约 0.6833，ECE 由约 0.312 降至约 0.212，交易效果仍不合格。
 - v51：准备出 132 条训练行（实际模型训练 119 条，另有 13 条用于校准）和 10 条留出行；新增 Relay 训练样本仅 1 条，训练/评估窗口分别有 845/194 条与累计记录重叠。两支各训练约 0.009073h/0.005686h；准确率 10%、balanced accuracy 33.33%、macro-F1 0.0606，10 笔费用后净 PnL 均为 -253.985 bps。该留出集样本很少，不作为充分效果结论。
