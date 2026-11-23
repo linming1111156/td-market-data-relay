@@ -13,6 +13,7 @@
 - 为让微调产物可供现有 feedback notebook 读取，已在同一 GPU 项目保存 version 15（Save & Run All）。2026-11-23 05:00 UTC 官方 CLI、MCP 与 Kaggle Active Events 均显示该版本仍为 `QUEUED`；kernel logs 为空，网页 Draft Session 已停止，当前没有 version 15 实际分配 GPU 或训练开始的证据。此时 GPU quota 已用 7.47h、剩余 22.53h/30h。继续跟踪同一运行，不重复 push、不创建 GPU 项目；版本完成后核对正式输出和 CUDA 回执，再执行 feedback。
 - 同一个 feedback 项目 `minglinl99/laya-model-feedback-gpu-recursive-round-v53` version 13 配置为回灌 `gpu-recursive-round-v55`，读取累计 paper-trade dataset 和固定 GPU notebook。Kaggle Active Events 一度显示 version 13 `Successful`，但该 run（372884097）网页记录为 9.3 秒、Accelerator `None`、Output `0 B`；日志只有 notebook 转换警告，未见发布结果。Kaggle MCP 仍确认累计数据集为 version 57（v54，1,202 条决策），因此不能把 feedback v13 记作完成回灌；待 GPU version 15 产物就绪后再复用/运行现有 feedback 项目。不要创建新 GPU 项目。
 - 2026-11-23 05:00 UTC 确认 `~/.kaggle/access_token` 文件存在，官方 Kaggle CLI 的 quota 与 kernel status 查询均成功；没有读取或复制密钥。
+- 2026-11-23 05:23 UTC 继续检查同一 GPU 项目：官方 CLI 与 MCP 仍报 version 15 `QUEUED`，网页 Active Events 排队约 1 小时，日志为空；GPU 额度仍已用 7.47h、剩余 22.53h。尝试在原 notebook 打开交互 session；Session options 选择 `GPU T4 x2`，但实际环境 cell 的 `torch.cuda.is_available()` 为 false，并报 `CUDA requested ... but Kaggle did not allocate it`。只安装了依赖并写入环境准备文件，没有运行数据准备或微调；该无 CUDA session 已停止，Kaggle 标记为 Cancelled。累计 paper-trade 仍为 version 57；不以 CPU 做微调，继续保留原 T4 x2 队列观察其真实状态。
 ### 历史实验记录（不代表当前运行状态）
 
 - v50 与 v51 的 RLCD、soft-ce 分支均使用 Tesla T4 并完成冻结评估；checkpoint、输入和运行产物保留在 Kaggle。
