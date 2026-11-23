@@ -2,14 +2,15 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
-## 当前进度（截至 2026-11-23 11:34 UTC）
+## 当前进度（截至 2026-11-23 11:40 UTC）
 
 - 递归轮次 `gpu-recursive-round-v56` 已在固定 GPU notebook `minglinl99/laya-gpu-finetune` version 16 完成。输入为 paper-trade version 58 和 Relay increment version 57；训练 1,097 行、冻结留出 24 行。Kaggle 日志确认 Tesla T4/CUDA：RLCD 0.023955 GPU 小时，soft-ce 0.021232 小时。两支 accuracy 0.1667、balanced accuracy 0.3333、macro-F1 0.0952，费用后净 PnL 均为 -818.608 bps；相比 v55 的 -255.636 bps 更差，不能认为策略改善。
 - 递归轮次 `gpu-recursive-round-v57` 已复用固定 GPU notebook 的交互 Draft Session 完成；网页显示 Draft Session 为 Running、GPU T4 ×2。摘要与 run manifests 证明 CUDA 实际训练 1,121 行（1,009 训练、112 校准），冻结留出只有 2 行。RLCD 与 soft-ce 分别使用 0.022465h、0.018863h GPU 时间；两支 accuracy 0.50、macro-F1 0.222、费用后净 PnL 均为 -24.519 bps。2 条留出不足以判断模型是否改善。
 - v57 的摘要、两支 run manifest、evaluation、逐样本预测与 checkpoint 已发布至 Kaggle 私有 artifacts dataset `minglinl99/laya-gpu-recursive-round-v57-artifacts`；网页显示 36 个文件，处理完成。feedback kernel 已将 2 条成熟真实 outcome 和逐样本预测追加到累计 paper-trade version 60（Ready）：累计 1,236 条决策（1,221 有效、15 无效），manifest SHA-256 `8fcc02ea3e6a6260c8b4aea4584e992dc342f483a348e78ab090a98662ad83ca`。该 feedback 项目当前 slug 为 `minglinl99/laya-model-feedback-gpu-recursive-round-v57`。
-- Relay increment version 58（Ready）累计 594 个归档、905,547,315 输入字节；已复用同步项目 `minglinl99/laya-kaggle-relay-increment-sync-main` 推送 version 8，当前 CLI 状态为 `RUNNING`，尚无新日志，不能推断是否新增 capture。version 58 的 manifest SHA-256 为 `af9d530f53a2b77844f5c629c9c55ace75ec6882049e3bf6faf80804b09f6290`。原始 capture 只留 Kaggle。
-- 2026-11-23 11:34 UTC 官方额度查询为 GPU 已用 9.40h、剩余 20.60h/30h，刷新时间 2026-11-28 00:00 UTC。当前没有 CPU 模型微调任务。
-- 下一步先读取 Relay version 8 的实际日志和发布状态。若有新 capture，基于新输入构造后续时间段并保持 v57 的 2 条评估不进入新一轮训练/评估；只有得到未使用的新鲜留出行才启动下一轮现有 GPU notebook。若没有新 capture，等待后续数据，不重复使用旧留出集。
+- Relay increment version 59（Ready）累计 602 个归档、910,457,073 输入字节；version 8 新增 8 个 capture ID，0 个无效项、0 个 remote loss record；manifest SHA-256 `d599489ac44d7943a42232292bf35ed6f842126fb5c3390eabea8236439934e8`。原始 capture 只留 Kaggle。
+- CPU 数据准备项目 `minglinl99/laya-cpu-data-preparation` version 8 正在处理 Relay version 59；尚未收到行数和缓存结果。此步骤只准备数据，不是模型微调。
+- 2026-11-23 11:40 UTC 官方额度查询为 GPU 已用 9.50h、剩余 20.50h/30h，刷新时间 2026-11-28 00:00 UTC。当前没有 CPU 模型微调任务。
+- 下一步读取 CPU preparation version 8 的真实日志，基于 paper-trade v60 和 Relay v59 冻结新的时间切分。保持 v57 的 2 条评估不进入新一轮训练/评估；只有未使用的新鲜留出行可用时，才在同一 GPU notebook 启动下一轮。
 
 ### 历史实验记录（不代表当前运行状态）
 
