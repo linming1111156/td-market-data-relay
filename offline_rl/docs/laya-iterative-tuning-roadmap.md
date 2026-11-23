@@ -2,10 +2,11 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
-## 当前进度（截至 2026-11-23 13:55 UTC）
+## 当前进度（截至 2026-11-23 17:23 UTC）
 
 - Relay 同步沿用 `minglinl99/laya-kaggle-relay-increment-sync-main` version 15 完成，累计数据集发布为 increment version 64（Ready）：新增 4 个 capture ID，累计 618 个归档、923,031,393 输入字节，0 个无效项、0 个 remote loss record；manifest SHA-256 `064770acd1c970e18d06c380b7c85fb9ac45aa64063416f761260137a8ef065a`。原有 CPU 数据准备项目 version 13 已完成并留在 Kaggle，895 条训练、239 条候选评估；日志明确 `trained: false`，只是数据准备。
-- 新递归轮次已基于 paper-trade version 64、Relay increment version 64 和 CPU preparation version 13 更新固定 GPU notebook `minglinl99/laya-gpu-finetune` version 24，请求 T4 ×2、计划额度 3 小时。2026-11-23 13:55 UTC，CLI 与 EgoLite 网页 Active Events 均显示 `QUEUED`（约 21 分钟）；网页 Draft Session 显示 Running（约 1 小时 2 分钟）。空闲超过 40 分钟后网页弹出“Are you still there?”；点击 `Continue editing` 后 session 仍显示 Running。GPU 日志尚无输出，故尚未确认 CUDA 分配或开始微调。官方额度当时已用 11.28h、剩余 18.72h/30h。保持同一 version 24 观察，不重复提交；只有页面/日志出现设备和训练证据后才记录为已开始。
+- 同一 GPU notebook 上的 version 24 最终变为 `CANCEL_ACKNOWLEDGED`，没有训练日志；官方 GPU 已用 13.31h，剩余 16.69h。网页显示旧 Draft Session 为 off。之后在 Kaggle 网页重新打开固定 notebook 的 Interactive Session，网页明确显示 `Interactive Session: Running (just now)`、Active Events 有 1 个交互 session；Draft Session 仍显示 off。随后在同一个 notebook slug 推送 version 25，输入 paper-trade v64、Relay increment v64、CPU preparation v13，请求 T4 ×2、计划 3 GPU 小时。
+- 2026-11-23 17:23 UTC，version 25 在 Kaggle CLI 与 EgoLite Active Events 中仍为 `QUEUED`（网页约 3 分钟）；独立 Interactive Session 显示 Running，GPU notebook 的 Draft Session 显示 off。GPU 日志尚无输出，未确认 CUDA 分配或微调开始；最新额度为已用 13.31h、剩余 16.69h/30h。只监控 version 25，不重复提交；排队任务与交互 session 是两个独立事件，不把交互 session 的 Running 当作微调开始。
 
 - 递归轮次 `gpu-recursive-round-v61` 已在固定 GPU notebook `minglinl99/laya-gpu-finetune` version 23 完成；网页 Active Events 显示 T4 ×2 成功，Kaggle 日志记录 Tesla T4/CUDA、1,131 条训练数据和 2 条冻结留出。RLCD 与 soft-ce 分支分别消耗 0.025144h、0.022553h GPU 时间（合计 0.047697h）；两支 accuracy、macro-F1 均为 0，费用后净 PnL 均为 -27.612 bps。2 条留出不足以判断模型改善。
 - `gpu-recursive-round-v61` 的成熟真实 outcome 和对应逐样本预测已由现有 feedback kernel v21 追加至 paper-trade dataset version 64（Ready），累计 1,246 条记录；版本说明为 `Add verified GPU model evaluation gpu-recursive-round-v61`。Relay increment dataset version 63（Ready）含 614 个归档、916,365,476 输入字节，最近一次同步新增/验证 3 个 capture ID，0 个无效项、0 个 remote loss record；manifest SHA-256 `074e63934704613dc7516f791ee228b43454c2f7811b3eb179af51152f113183`。Kaggle CPU 数据准备 version 12 生成 895 条训练和 237 条候选评估行（仅数据准备，未进行 CPU 微调）。
