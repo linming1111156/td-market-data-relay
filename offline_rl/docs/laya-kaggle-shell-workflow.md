@@ -37,13 +37,15 @@ $SCRIPT logs FEEDBACK
 # 逐阶段更新固定 Kaggle 项目
 $SCRIPT relay
 $SCRIPT prepare
-$SCRIPT train gpu-recursive-round-v61 0 --web-confirmed
+$SCRIPT train gpu-recursive-round-v61 0 --web-confirmed --recurrent-depth-ablation
 $SCRIPT feedback gpu-recursive-round-v62 --evaluation-confirmed
 ```
 
-`train` 的第一个参数是**当前累计数据集最后一次已发布的 feedback round ID**，不是这次新训练的 ID。第二个参数是从 EgoLite Active Events 查到的其他 GPU 占用小时；若没有其他 GPU 任务，填 `0`。`--web-confirmed` 表示你已经在 EgoLite 打开原 GPU notebook，并查看 Draft Session 和 Active Events。脚本还会读取官方最新 quota，并把两个分支各自 3 小时的计划一起计入额度。
+`train` 的第一个参数是**当前累计数据集最后一次已发布的 feedback round ID**，不是这次新训练的 ID。第二个参数是从 EgoLite Active Events 查到的其他 GPU 占用小时；若没有其他 GPU 任务，填 `0`。`--web-confirmed` 表示你已经在 EgoLite 打开原 GPU notebook，并查看 Draft Session 和 Active Events。脚本还会读取官方最新 quota，并把计划分支各自 3 小时一起计入额度。
 
-`feedback` 的参数是**本次新训练要发布的 feedback round ID**，应使用未用过的序号。示例中，训练以 v61 为输入，冻结评估完成后把结果记为 v62；下一轮训练再传 v62。发布 feedback 前，`--evaluation-confirmed` 要求先在 GPU 日志确认实际 CUDA、两个分支完成、冻结评估已经落盘。
+默认两支是 RLCD depth 1 与 soft-ce depth 1。可在末尾加 `--recurrent-depth-ablation`，在相同训练/留出切分上再加一支 soft-ce depth 2；该对照总计按三支各 3 小时预留。depth 2 的每个 ModernBERT block 使用同一组权重连续计算两次，参数量不增加，编码器计算量约翻倍。该实验是待验证假设，不能预先认为交易准确率会提高。`run.json` 和轮次 summary 会记录 `recurrent_depth`，分支名分别包含 `depth-1` 或 `depth-2`。
+
+`feedback` 的参数是**本次新训练要发布的 feedback round ID**，应使用未用过的序号。示例中，训练以 v61 为输入，冻结评估完成后把结果记为 v62；下一轮训练再传 v62。发布 feedback 前，`--evaluation-confirmed` 要求先在 GPU 日志确认实际 CUDA、所有计划分支完成、冻结评估已经落盘。若包含不同循环深度，feedback 会为每个 loss/depth 组合建立独立策略名，避免 depth 2 覆盖 depth 1 的结果。
 
 脚本会拒绝在固定 kernel 仍 Queued/Running 时再 push，避免重复提交；会要求 Relay 和 CPU 数据准备先完成，GPU 额度不足时停止，不会转 CPU。Relay/CPU/feedback 项目同样复用已有 slug。
 
@@ -59,7 +61,7 @@ $SCRIPT feedback gpu-recursive-round-v62 --evaluation-confirmed
 | feedback 新增/累计行数、有效/无效数和发布状态 | `$SCRIPT logs FEEDBACK` |
 | paper-trade / Relay 数据集版本号及版本说明 | Kaggle 对应私有 Dataset 页面 → **Versions**；`status` 显示的文件列表用于辅助看当前文件 |
 
-小留出集上的指标只能描述该轮冻结样本，不能据此声称模型整体改善。每次汇报同时记录两个分支 GPU 小时、剩余额度、留出行数、累计数据集版本/记录数和下一步。
+小留出集上的指标只能描述该轮冻结样本，不能据此声称模型整体改善。每次汇报同时记录训练分支数、每支 GPU 小时、剩余额度、留出行数、累计数据集版本/记录数和下一步。比较循环深度时，重点对比相同 loss、相同数据切分下 depth 1 与 depth 2 的费用后 PnL、macro-F1、balanced accuracy、Brier/ECE，以及运行耗时；小样本只作为流程信号，不作为胜出结论。
 
 ## 一轮递归怎么跑
 

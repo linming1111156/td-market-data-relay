@@ -28,7 +28,7 @@ def notebook_source(dataset_ref: str, expected_feedback_round: str,
                     experience_manifest_sha256: str, capture_increment_ref: str,
                     relay_manifest_sha256: str, seed: int,
                     quota_used_hours: float, reserved_gpu_hours: float,
-                    plan_hours: float) -> str:
+                    plan_hours: float, recurrent_depth_ablation: bool = False) -> str:
     files = json.dumps(embedded_sources(), separators=(",", ":"))
     source = r'''import base64, hashlib, json, math, os, shutil, subprocess, sys, time
 from collections import Counter
@@ -43,10 +43,11 @@ EXPECTED_EXPERIENCE_SHA256=__EXPERIENCE_SHA256__
 BASE_CAPTURE_REF=__BASE_CAPTURE_REF__
 INCREMENT_REF=__INCREMENT_REF__
 EXPECTED_RELAY_SHA256=__RELAY_SHA256__
-LOSSES=('rlcd','soft-ce'); SEED=__SEED__
+LOSSES=('rlcd','soft-ce'); RECURRENT_DEPTH_ABLATION=__RECURRENT_ABLATION__; SEED=__SEED__
+BRANCH_COUNT=len(LOSSES)+(1 if RECURRENT_DEPTH_ABLATION else 0)
 QUOTA_USED=__QUOTA_USED__; OTHER_RESERVED=__RESERVED__; PLAN_HOURS=__PLAN_HOURS__
 HORIZON_MINUTES=15
-if QUOTA_USED+OTHER_RESERVED+PLAN_HOURS*len(LOSSES)>30:
+if QUOTA_USED+OTHER_RESERVED+PLAN_HOURS*BRANCH_COUNT>30:
  raise RuntimeError('official rolling GPU quota plan exceeds 30 hours')
 
 for name,payload in FILES.items():
@@ -277,21 +278,24 @@ print(json.dumps({'event':'data_prepared','experience_manifest_sha256':manifest_
  'label_counts':label_counts,'rejected_cumulative_rows':dict(rejected)},ensure_ascii=False,sort_keys=True),flush=True)
 
 branches=[]
-def train_branch(loss):
- output=WORK/f'laya-after-{EXPECTED_FEEDBACK_ROUND}-model-{loss}'
+def train_branch(loss,recurrent_depth=1):
+ branch_name=f'{loss}-depth-{recurrent_depth}'
+ output=WORK/f'laya-after-{EXPECTED_FEEDBACK_ROUND}-model-{branch_name}'
  command=[sys.executable,str(ROOT/'offline_rl/scripts/laya_market_finetune.py'),
   '--relay-prepared-data-dir',str(prepared),'--output',str(output),'--device','cuda',
   '--gpu-hours-used-7d',str(QUOTA_USED),'--gpu-planned-hours',str(PLAN_HOURS),
   '--epochs','1','--micro-batch','16','--grad-accum','8','--seed',str(SEED),
-  '--workers','2','--loss',loss]
+  '--workers','2','--loss',loss,'--recurrent-depth',str(recurrent_depth)]
  started=time.monotonic()
- print(json.dumps({'event':'branch_started','branch':loss,'output':str(output)},
+ print(json.dumps({'event':'branch_started','branch':branch_name,'loss':loss,
+  'recurrent_depth':recurrent_depth,'output':str(output)},
   ensure_ascii=False,sort_keys=True),flush=True)
  subprocess.run(command,cwd=ROOT,check=True,timeout=int(PLAN_HOURS*3600))
  run_path=output/'run.json'; run=json.loads(run_path.read_text(encoding='utf-8'))
  if run.get('runtime_probe',{}).get('selected_device')!='cuda' or float(run.get('actual_gpu_hours') or 0)<=0:
-  raise ValueError(f'{loss} branch did not prove actual CUDA training time')
- branch={'loss':loss,'run_json_sha256':sha256(run_path),
+  raise ValueError(f'{branch_name} branch did not prove actual CUDA training time')
+ branch={'loss':loss,'branch':branch_name,'recurrent_depth':recurrent_depth,
+  'run_json_sha256':sha256(run_path),
   'actual_gpu_hours':run.get('actual_gpu_hours'),
   'elapsed_seconds':round(time.monotonic()-started,3),
   'training_metrics':run.get('training_result'),
@@ -302,14 +306,15 @@ def train_branch(loss):
   ensure_ascii=False,sort_keys=True,default=str),flush=True)
  return branch
 summary={'schema':'td_market_data_laya_recursive_gpu_round','version':1,
- 'status':'trained_and_frozen_evaluated' if len(branches)==len(LOSSES) else 'partial_branch_results',
+ 'status':'trained_and_frozen_evaluated' if len(branches)==BRANCH_COUNT else 'partial_branch_results',
  'experience_ref':EXPERIENCE_REF,
  'experience_manifest_sha256':manifest_sha,'previous_feedback_round':EXPECTED_FEEDBACK_ROUND,
  'relay_ref':INCREMENT_REF,'relay_manifest_sha256':relay_sha,'base_capture_ref':BASE_CAPTURE_REF,
  'gpu_device':gpu_name,'quota_used_hours_at_start':QUOTA_USED,
- 'other_reserved_gpu_hours':OTHER_RESERVED,'planned_gpu_hours':PLAN_HOURS*len(LOSSES),
+ 'other_reserved_gpu_hours':OTHER_RESERVED,'planned_gpu_hours':PLAN_HOURS*BRANCH_COUNT,
  'actual_gpu_hours':sum(float(row.get('actual_gpu_hours') or 0) for row in branches),
- 'losses':list(LOSSES),'branches':branches,'seed':SEED,
+ 'losses':list(LOSSES),'recurrent_depth_ablation':RECURRENT_DEPTH_ABLATION,
+ 'branches':branches,'seed':SEED,
  'train_rows':len(train_rows),'evaluation_rows':len(eval_rows),
  'raw_preparation_source':raw_preparation_source,
  'manifest_sha256':sha256(prepared/'manifest.json')}
@@ -327,6 +332,7 @@ print(json.dumps({'event':'recursive_round_complete','summary':summary},ensure_a
         "__SEED__": repr(seed),
         "__QUOTA_USED__": repr(quota_used_hours),
         "__RESERVED__": repr(reserved_gpu_hours), "__PLAN_HOURS__": repr(plan_hours),
+        "__RECURRENT_ABLATION__": repr(recurrent_depth_ablation),
     }
     for marker, value in values.items():
         source = source.replace(marker, value)
@@ -348,6 +354,8 @@ def main() -> int:
     parser.add_argument("--quota-used-hours", required=True, type=float)
     parser.add_argument("--reserved-gpu-hours", required=True, type=float)
     parser.add_argument("--plan-hours", type=float, default=1.5)
+    parser.add_argument("--recurrent-depth-ablation", action="store_true",
+                        help="add a soft-ce depth-2 branch beside the depth-1 controls")
     args = parser.parse_args()
     if not math.isfinite(args.quota_used_hours) or not 0 <= args.quota_used_hours <= 30:
         parser.error("quota used hours must be within 0..30")
@@ -355,14 +363,16 @@ def main() -> int:
         parser.error("reserved GPU hours cannot be negative")
     if not math.isfinite(args.plan_hours) or args.plan_hours <= 0:
         parser.error("plan hours must be positive")
-    planned_pair = args.plan_hours * 2
-    if args.quota_used_hours + args.reserved_gpu_hours + planned_pair > 30:
-        parser.error("used + reserved + paired planned GPU hours exceed the official 30-hour limit")
+    branch_count = 3 if args.recurrent_depth_ablation else 2
+    planned_hours = args.plan_hours * branch_count
+    if args.quota_used_hours + args.reserved_gpu_hours + planned_hours > 30:
+        parser.error("used + reserved + planned GPU hours exceed the official 30-hour limit")
     slug = args.project_slug
     source = notebook_source(args.dataset_ref, args.expected_feedback_round,
         args.experience_manifest_sha256.lower(), args.capture_increment_ref,
         args.relay_manifest_sha256.lower(), args.seed,
-        args.quota_used_hours, args.reserved_gpu_hours, args.plan_hours)
+        args.quota_used_hours, args.reserved_gpu_hours, args.plan_hours,
+        args.recurrent_depth_ablation)
     setup, preparation = source.split("experience=dataset_root(EXPERIENCE_REF)\n", 1)
     preparation = "experience=dataset_root(EXPERIENCE_REF)\n" + preparation
     preparation, summary = preparation.split(
@@ -370,14 +380,18 @@ def main() -> int:
     summary = "summary={'schema':'td_market_data_laya_recursive_gpu_round','version':1,\n" + summary
     preparation += "\nprint(json.dumps({'event':'preparation_complete','train_rows':len(train_rows),\n 'evaluation_rows':len(eval_rows),'cache_hit':raw_cache_hit},sort_keys=True),flush=True)\n"
     branch_cells = []
-    for index, loss in enumerate(("rlcd", "soft-ce"), start=3):
+    branch_specs = [(loss, 1) for loss in ("rlcd", "soft-ce")]
+    if args.recurrent_depth_ablation:
+        branch_specs.append(("soft-ce", 2))
+    for index, (loss, recurrent_depth) in enumerate(branch_specs, start=3):
+        branch_name = f"{loss}-depth-{recurrent_depth}"
         branch_cells.extend([
-            {"cell_type":"markdown","id":f"{loss}-branch-heading","metadata":{},
-             "source":f"## {index}. {loss} 微调分支\n\n独立执行并实时输出训练进度。\n"},
-            {"cell_type":"code","id":f"run-{loss}-branch","execution_count":None,
+            {"cell_type":"markdown","id":f"{branch_name}-branch-heading","metadata":{},
+             "source":f"## {index}. {branch_name} 微调分支\n\n独立执行并实时输出训练进度。\n"},
+            {"cell_type":"code","id":f"run-{branch_name}-branch","execution_count":None,
              "metadata":{},"outputs":[],"source":
-             f"print(json.dumps({{'event':'branch_cell_started','branch':'{loss}'}}),flush=True)\n"
-             f"branches.append(train_branch('{loss}'))\n"}])
+             f"print(json.dumps({{'event':'branch_cell_started','branch':'{branch_name}'}}),flush=True)\n"
+             f"branches.append(train_branch('{loss}',{recurrent_depth}))\n"}])
     notebook = {"cells": [
         {"cell_type":"markdown","id":"recursive-gpu-notes","metadata":{},
          "source":"在原有 GPU notebook 内分段执行：环境/GPU、缓存数据准备、RLCD、soft-ce、汇总。两支任务各自输出开始与结束事件；每支完成后即可查看 GPU 时长和评估指标。标签只取成熟真实 outcome，评估使用未参与训练的后续时间窗口。\n"},

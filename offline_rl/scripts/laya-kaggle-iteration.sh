@@ -26,6 +26,7 @@ Usage:
   laya-kaggle-iteration.sh relay
   laya-kaggle-iteration.sh prepare
   laya-kaggle-iteration.sh train PREVIOUS_FEEDBACK_ROUND RESERVED_GPU_HOURS --web-confirmed
+  laya-kaggle-iteration.sh train PREVIOUS_FEEDBACK_ROUND RESERVED_GPU_HOURS --web-confirmed --recurrent-depth-ablation
   laya-kaggle-iteration.sh feedback NEW_FEEDBACK_ROUND --evaluation-confirmed
   laya-kaggle-iteration.sh cycle-help
 
@@ -81,14 +82,16 @@ read_gpu_used_hours() {
 }
 
 check_quota_plan() {
-  local used="$1" reserved="$2" plan="$BRANCH_PLAN_HOURS"
-  python3 - "$used" "$reserved" "$plan" <<'PY'
+  local used="$1" reserved="$2" branches="$3" plan="$BRANCH_PLAN_HOURS"
+  python3 - "$used" "$reserved" "$plan" "$branches" <<'PY'
 import sys
-used, reserved, per_branch = map(float, sys.argv[1:])
-total = used + reserved + 2 * per_branch
-print(f"GPU plan: used {used:.2f}h + other reservations {reserved:.2f}h + planned {2*per_branch:.2f}h = {total:.2f}h / 30h")
+used, reserved, per_branch = map(float, sys.argv[1:4])
+branches = int(sys.argv[4])
+planned = branches * per_branch
+total = used + reserved + planned
+print(f"GPU plan: used {used:.2f}h + other reservations {reserved:.2f}h + planned {planned:.2f}h ({branches} branches) = {total:.2f}h / 30h")
 if total > 30:
-    raise SystemExit("Not enough official GPU quota for both fine-tuning branches; shorten the plan or wait for quota refresh.")
+    raise SystemExit("Not enough official GPU quota for this fine-tuning plan; shorten the plan or wait for quota refresh.")
 PY
 }
 
@@ -138,9 +141,9 @@ push_cpu_prepare() {
 }
 
 push_gpu_train() {
-  local previous_round="${1:-}" reserved="${2:-}" web_confirmed="${3:-}"
-  if [[ -z "$previous_round" || -z "$reserved" || "$web_confirmed" != "--web-confirmed" ]]; then
-    printf 'Usage: train PREVIOUS_FEEDBACK_ROUND RESERVED_GPU_HOURS --web-confirmed\n' >&2
+  local previous_round="${1:-}" reserved="${2:-}" web_confirmed="${3:-}" ablation="${4:-}"
+  if [[ -z "$previous_round" || -z "$reserved" || "$web_confirmed" != "--web-confirmed" || ( -n "$ablation" && "$ablation" != "--recurrent-depth-ablation" ) ]]; then
+    printf 'Usage: train PREVIOUS_FEEDBACK_ROUND RESERVED_GPU_HOURS --web-confirmed [--recurrent-depth-ablation]\n' >&2
     printf 'Check the existing notebook session and Active Events in EgoLite first.\n' >&2
     return 2
   fi
@@ -158,10 +161,12 @@ push_gpu_train() {
   assert_kernel_complete "$CPU_KERNEL"
   local used
   used="$(read_gpu_used_hours)"
-  check_quota_plan "$used" "$reserved"
+  local branch_count=2
+  [[ "$ablation" == "--recurrent-depth-ablation" ]] && branch_count=3
+  check_quota_plan "$used" "$reserved" "$branch_count"
 
   mkdir -p "$OUTPUT_DIR"
-  python3 "$REPO_ROOT/offline_rl/scripts/build_laya_kaggle_recursive_iteration.py" \
+  local -a build_args=(
     --output-dir "$OUTPUT_DIR" \
     --project-slug laya-gpu-finetune \
     --dataset-ref "$EXPERIENCE_DATASET" \
@@ -170,6 +175,9 @@ push_gpu_train() {
     --quota-used-hours "$used" \
     --reserved-gpu-hours "$reserved" \
     --plan-hours "$BRANCH_PLAN_HOURS"
+  )
+  [[ "$ablation" == "--recurrent-depth-ablation" ]] && build_args+=(--recurrent-depth-ablation)
+  python3 "$REPO_ROOT/offline_rl/scripts/build_laya_kaggle_recursive_iteration.py" "${build_args[@]}"
   kaggle kernels push -p "$OUTPUT_DIR/laya-gpu-finetune"
   printf '\nSubmitted the existing GPU project. Run `status`/`logs GPU` to monitor it.\n'
   printf 'If status is QUEUED, inspect Draft Session and Active Events in EgoLite before deciding what to do.\n'
@@ -204,7 +212,7 @@ case "${1:-}" in
   logs) show_logs "${2:-GPU}" ;;
   relay) push_relay ;;
   prepare) push_cpu_prepare ;;
-  train) push_gpu_train "${2:-}" "${3:-}" "${4:-}" ;;
+  train) push_gpu_train "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
   feedback) push_feedback "${2:-}" "${3:-}" ;;
   cycle-help)
     cat <<'EOF'

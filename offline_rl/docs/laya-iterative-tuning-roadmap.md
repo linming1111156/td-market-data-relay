@@ -2,6 +2,12 @@
 
 本页按当前仓库实现描述 GPU 微调路径。实时 kernel 状态和额度会变化；每次启动前都必须查询 Kaggle CLI，不要把文档里的历史额度或运行状态当作实时值。原始 capture、准备数据、checkpoint、预测和完整运行报告保留在 Kaggle。
 
+## 循环深度实验（2026-11-25，待 GPU 对照）
+
+Laya 使用 28 层 ModernBERT encoder。训练入口由 `laya.train.finetune()` 内部创建模型，因此普通训练参数无法直接改变 encoder 深度。当前代码新增可选 `--recurrent-depth 2`：保留原来的 28 个参数块，并让每个块在一次前向计算中连续执行两次，共享同一组权重；它不增加参数量，但大约增加一倍 encoder 计算。默认值仍为 1，旧训练路径不变。
+
+使用既有 GPU 项目做配对对照时，可给 shell `train` 命令添加 `--recurrent-depth-ablation`。它在同一份训练/留出切分上执行 RLCD depth 1、soft-ce depth 1 和 soft-ce depth 2。比较 depth 1 与 depth 2 时只改变循环次数，其他 soft-ce 设置保持一致。深度循环可能提高或降低准确率，当前没有实验结果证明会变好；评估样本很少时只记录观察值，不宣布胜出。该对照尚未在 Kaggle GPU 上运行，后续需按常规检查 Session 与 CUDA，并在日志中记录深度、耗时及冻结指标。
+
 ## 当前进度（截至 2026-11-23 17:52 UTC）
 
 - Relay 同步沿用 `minglinl99/laya-kaggle-relay-increment-sync-main` version 15 完成，累计数据集发布为 increment version 64（Ready）：新增 4 个 capture ID，累计 618 个归档、923,031,393 输入字节，0 个无效项、0 个 remote loss record；manifest SHA-256 `064770acd1c970e18d06c380b7c85fb9ac45aa64063416f761260137a8ef065a`。原有 CPU 数据准备项目 version 13 已完成并留在 Kaggle，895 条训练、239 条候选评估；日志明确 `trained: false`，只是数据准备。

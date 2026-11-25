@@ -29,6 +29,45 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def enable_modernbert_recurrent_depth(depth: int) -> None:
+    """Repeat each ModernBERT encoder block with shared weights for one forward pass.
+
+    Laya's public fine-tuning API constructs the encoder internally, so install
+    this small runtime patch before calling it. The ModuleList keeps its normal
+    registered parameter names; its iterator only changes the number of block
+    applications. Depth 1 leaves the upstream model untouched.
+    """
+    if depth <= 1:
+        return
+    import torch.nn as nn
+    from transformers.models.modernbert.modeling_modernbert import ModernBertModel
+
+    class RecurrentLayerList(nn.ModuleList):
+        def __init__(self, layers, recurrent_depth: int):
+            super().__init__(list(layers))
+            self.recurrent_depth = recurrent_depth
+
+        def __iter__(self):
+            for _ in range(self.recurrent_depth):
+                yield from super().__iter__()
+
+    if getattr(ModernBertModel, "_laya_recurrent_depth_patch", False):
+        ModernBertModel._laya_active_recurrent_depth = depth
+        return
+
+    original_init = ModernBertModel.__init__
+
+    def recurrent_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        active_depth = getattr(ModernBertModel, "_laya_active_recurrent_depth", depth)
+        self.layers = RecurrentLayerList(self.layers, active_depth)
+        self.config.laya_recurrent_depth = active_depth
+
+    ModernBertModel.__init__ = recurrent_init
+    ModernBertModel._laya_active_recurrent_depth = depth
+    ModernBertModel._laya_recurrent_depth_patch = True
+
+
 def checkpoint_files(root: Path) -> list[dict[str, Any]]:
     files = []
     for path in sorted(root.rglob("*")):
@@ -296,6 +335,8 @@ def parse_args() -> argparse.Namespace:
                         help="required for GPU training: planned GPU run duration, within the official 30-hour rolling 7-day limit")
     parser.add_argument("--workers", type=int, default=min(os.cpu_count() or 2, 8))
     parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--recurrent-depth", type=int, choices=(1, 2, 3), default=1,
+                        help="apply each shared ModernBERT encoder block this many times per forward pass")
     parser.add_argument("--micro-batch", type=int, default=8)
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--seed", type=int, default=20261120)
@@ -455,6 +496,7 @@ def main() -> int:
     }
     if not args.prepare_only:
         import torch
+        enable_modernbert_recurrent_depth(args.recurrent_depth)
         from laya.train import TrainConfig, finetune, resolve_checkpoint_dir
 
         device = args.device
@@ -502,6 +544,8 @@ def main() -> int:
                                      "micro_batch": args.micro_batch,
                                      "grad_accum": args.grad_accum,
                                      "freeze_encoder": not args.unfreeze_encoder,
+                                     "recurrent_depth": args.recurrent_depth,
+                                     "recurrent_depth_method": "shared ModernBERT block weights, repeated sequentially",
                                      "loss": args.loss,
                                      "seed": args.seed,
                                      "device": device},

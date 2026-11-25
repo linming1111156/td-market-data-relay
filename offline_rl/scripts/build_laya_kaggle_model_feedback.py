@@ -127,9 +127,6 @@ for branch in branches:
  loss=branch.get('loss')
  if branch.get('status','complete')!='complete' or loss not in ('rlcd','soft-ce'):
   raise ValueError('source kernel contains an incomplete or unknown loss branch')
- strategy='laya_'+FEEDBACK_ROUND.replace('-','_')+'_'+loss.replace('-','_')
- if strategy in (manifest.get('strategies') or []):
-  raise ValueError('feedback strategy already exists in cumulative dataset: '+strategy)
  run_sha=branch.get('run_json_sha256')
  if not isinstance(run_sha,str) or len(run_sha)!=64:
   raise ValueError('branch is missing its run.json SHA-256')
@@ -138,6 +135,12 @@ for branch in branches:
  if run.get('schema')!='td_market_data_laya_market_finetune':
   raise ValueError('branch run manifest schema mismatch')
  config=run.get('train_config') or {}
+ recurrent_depth=config.get('recurrent_depth',1)
+ if not isinstance(recurrent_depth,int) or recurrent_depth not in (1,2,3):
+  raise ValueError('branch has an unsupported recurrent depth')
+ strategy='laya_'+FEEDBACK_ROUND.replace('-','_')+'_'+loss.replace('-','_')+f'_depth_{recurrent_depth}'
+ if strategy in (manifest.get('strategies') or []):
+  raise ValueError('feedback strategy already exists in cumulative dataset: '+strategy)
  if config.get('device')!='cuda' or float(run.get('actual_gpu_hours') or 0)<=0:
   raise ValueError('branch manifest does not prove CUDA training time')
  if config.get('loss')!=loss:
@@ -228,6 +231,7 @@ for branch in branches:
    raise ValueError('frozen evaluation timestamps are not strictly increasing')
  metrics=run.get('trading_evaluation') or {}
  branch_summaries.append({'loss':loss,'strategy':strategy,'run_json_sha256':run_sha,
+  'recurrent_depth':recurrent_depth,
   'prediction_sha256':prediction_sha,'evaluation_sha256':evaluation_sha,
   'evaluation_rows':len(evaluation),'actual_gpu_hours':run.get('actual_gpu_hours'),
   'training_metrics':run.get('training_result'),'trading_evaluation':metrics})
